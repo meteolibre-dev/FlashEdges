@@ -96,7 +96,30 @@ def main():
         "--dataset_path",
         type=str,
         default=None,
-        help="Override dataset_path from config.",
+        help="Override dataset_path from config (local map-style dataset).",
+    )
+    parser.add_argument(
+        "--streaming",
+        action="store_true",
+        help="Stream the dataset from Hugging Face instead of reading locally.",
+    )
+    parser.add_argument(
+        "--hf_dataset_repo",
+        type=str,
+        default=None,
+        help="HF dataset repo id for streaming (e.g. meteolibre-dev/flashedges_global_v1).",
+    )
+    parser.add_argument(
+        "--shuffle_buffer",
+        type=int,
+        default=1000,
+        help="Shuffle buffer size for streaming (rows; ~4MB each). 0 disables.",
+    )
+    parser.add_argument(
+        "--steps_per_epoch",
+        type=int,
+        default=None,
+        help="Steps per epoch when streaming (no length available). Required for streaming.",
     )
     args = parser.parse_args()
 
@@ -130,38 +153,48 @@ def main():
     dataset_path = args.dataset_path or params["dataset_path"]
 
     id_run = str(datetime.utcnow())[:19]
-    set_seed(seed)
-
-    hps = {
-        "batch_size": batch_size,
-        "learning_rate": learning_rate,
-        "interpolation": INTERPOLATION,
-        "residual": residual,
-        "sigma_noise_input": sigma_noise_input,
-    }
-    accelerator.init_trackers("flashedges_" + id_run, config=hps)
-
-    print(f"Config: {args.config}")
-    print(f"  residual: {residual}, sigma_noise_input: {sigma_noise_input}")
-    print(f"  metar_loss_weight: {metar_loss_weight}")
-    print(f"  dataset: {dataset_path}")
-
-    # --- Dataset ---
-    dataset = FlashEdgesGlobalDataset(
-        localrepo=dataset_path,
-        cache_size=10,
-        seed=seed,
-        nb_temporal=7,
-        precip_to_dbz=True,
-    )
+    # --- Dataset: local map-style or HF streaming ---
+    if args.streaming:
+        from meteolibre_model.dataset.dataset_global_satellite_streaming import (
+            FlashEdgesStreamingDataset,
+        )
+        if args.hf_dataset_repo is None:
+            raise ValueError("--streaming requires --hf_dataset_repo.")
+        if args.steps_per_epoch is None:
+            raise ValueError(
+                "--streaming requires --steps_per_epoch (streaming datasets "
+                "have no length)."
+            )
+        dataset = FlashEdgesStreamingDataset(
+            hf_dataset_repo=args.hf_dataset_repo,
+            split="train",
+            shuffle_buffer=args.shuffle_buffer,
+            precip_to_dbz=True,
+            nb_temporal=7,
+            seed=seed,
+        )
+        streaming = True
+        print(f"  streaming: {args.hf_dataset_repo} (buffer={args.shuffle_buffer}, "
+              f"steps/epoch={args.steps_per_epoch})")
+    else:
+        dataset = FlashEdgesGlobalDataset(
+            localrepo=dataset_path,
+            cache_size=10,
+            seed=seed,
+            nb_temporal=7,
+            precip_to_dbz=True,
+        )
+        streaming = False
 
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=False,  # streaming shuffles via buffer; map-style relies on
+                        # per-worker file shuffling in __getitem__
         num_workers=16,
         pin_memory=True,
     )
+
 
     # --- Model ---
     model_params = params["model"]
@@ -187,10 +220,16 @@ def main():
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
+        n_steps_epoch = 0
+
+        # For streaming datasets there is no length; cap the epoch at
+        # steps_per_epoch. For map-style, len(dataloader) bounds it.
+        epoch_step_limit = args.steps_per_epoch if streaming else None
 
         progress_bar = tqdm(
             dataloader,
             desc=f"Epoch {epoch + 1}/{num_epochs}",
+            total=epoch_step_limit,
             disable=not accelerator.is_main_process,
         )
         for batch in progress_bar:
@@ -212,6 +251,7 @@ def main():
                 optimizer.zero_grad()
 
                 global_step += 1
+                n_steps_epoch += 1
 
                 if global_step % LOG_EVERY_N_STEPS == 0 and accelerator.is_main_process:
                     accelerator.log(
@@ -231,7 +271,10 @@ def main():
                     metar=f"{loss_metar.item():.4f}",
                 )
 
-        avg_loss = total_loss / len(dataloader)
+            if epoch_step_limit is not None and n_steps_epoch >= epoch_step_limit:
+                break
+
+        avg_loss = total_loss / max(n_steps_epoch, 1)
         accelerator.log({"Loss/train_epoch": avg_loss}, step=epoch)
         print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {avg_loss:.4f}")
 

@@ -96,6 +96,108 @@ def mmh_to_dbz(rate_mmh: np.ndarray) -> np.ndarray:
     return out
 
 
+def resolve_date(record) -> datetime:
+    """Reference timestamp of a row, from the ``date`` column.
+
+    Works with both a pandas Series and a plain dict (HF streaming rows are
+    dicts), and tolerates the column being a string, a datetime, or a
+    pandas Timestamp.
+    """
+    get = (record.get if hasattr(record, "get") else lambda k, d=None: record[k])
+    date_val = get("date")
+    if date_val is None or (isinstance(date_val, float) and np.isnan(date_val)):
+        raise ValueError("record has no usable 'date' field")
+    if isinstance(date_val, datetime):
+        return date_val
+    if hasattr(date_val, "to_pydatetime"):  # pandas.Timestamp
+        return date_val.to_pydatetime()
+    return datetime.strptime(str(date_val), "%Y-%m-%d %H:%M:%S")
+
+
+def preprocess_record(date: datetime, record, nb_temporal: int, precip_to_dbz: bool) -> dict:
+    """Turn one raw parquet row (dict or Series) into the model's input tensors.
+
+    Shared by the map-style ``FlashEdgesGlobalDataset`` and the streaming
+    ``FlashEdgesStreamingDataset`` so the two stay byte-identical.
+    """
+    # --- satellite (T, 4, H, W) float16 -> float32 ---
+    sat_patch = (
+        np.frombuffer(record["sat_data"], dtype=record["sat_dtype"])
+        .reshape(record["sat_shape"])
+        .astype(np.float32)
+        .copy()
+    )
+
+    # --- elevation (H, W) -> (T, 1, H, W), floor negatives/nodata ---
+    if record.get("elevation_data") is not None:
+        elev = (
+            np.frombuffer(record["elevation_data"], dtype=record["elevation_dtype"])
+            .reshape(record["elevation_shape"])
+            .astype(np.float32)
+            .copy()
+        )
+    else:
+        # Parquet file generated without elevation: zeros keep channel count.
+        t_, _, h, w = sat_patch.shape
+        elev = np.zeros((h, w), dtype=np.float32)
+
+    elev = np.where(elev < 0, ELEVATION_FLOOR, elev)
+    elev = elev[None, None, :, :].repeat(sat_patch.shape[0], axis=0)
+
+    # dense conditioning field: GMGSI + elevation
+    sat_patch_data = np.concatenate([sat_patch, elev], axis=1)
+
+    # --- METAR (T, 7, H, W): optional dBZ, then validity mask + sentinel ---
+    metar_patch = (
+        np.frombuffer(record["metar_data"], dtype=record["metar_dtype"])
+        .reshape(record["metar_shape"])
+        .astype(np.float32)
+        .copy()
+    )
+
+    if precip_to_dbz:
+        metar_patch[:, METAR_PRECIP_IDX] = mmh_to_dbz(
+            metar_patch[:, METAR_PRECIP_IDX]
+        )
+
+    metar_mask = (~np.isnan(metar_patch)).astype(np.float32)
+    metar_patch_data = np.where(
+        np.isnan(metar_patch), METAR_NAN_SENTINEL, metar_patch
+    )
+
+    # --- crop temporal dim if the row carries more frames than requested ---
+    if sat_patch_data.shape[0] > nb_temporal:
+        sat_patch_data = sat_patch_data[:nb_temporal]
+    if metar_patch_data.shape[0] > nb_temporal:
+        metar_patch_data = metar_patch_data[:nb_temporal]
+        metar_mask = metar_mask[:nb_temporal]
+
+    # --- sun position features from patch centre + reference time ---
+    lon = float(record["lon"])
+    lat = float(record["lat"])
+
+    sun_pos = get_position(date, lon, lat)
+    date_noon = date.replace(hour=12, minute=0, second=0, microsecond=0)
+    sun_pos_noon = get_position(date_noon, lon, lat)
+
+    spatial_position = torch.tensor(
+        [
+            float(sun_pos["azimuth"]),
+            float(sun_pos["altitude"]),
+            float(sun_pos_noon["altitude"]),
+            lat / 10.0,
+        ],
+        dtype=torch.float32,
+    )
+
+    return {
+        "sat_patch_data": torch.from_numpy(sat_patch_data),
+        "metar_patch_data": torch.from_numpy(metar_patch_data),
+        "metar_mask": torch.from_numpy(metar_mask),
+        "spatial_position": spatial_position,
+    }
+
+
 class FlashEdgesGlobalDataset(torch.utils.data.Dataset):
     """
     Map-style dataset over the FlashEdges global GMGSI + METAR parquet patches.
@@ -178,98 +280,13 @@ class FlashEdgesGlobalDataset(torch.utils.data.Dataset):
             self.cache.popitem(last=False)
         return data_df
 
-    def _preprocess(self, date: datetime, record: pd.Series) -> dict:
-        # --- satellite (T, 4, H, W) float16 -> float32 ---
-        sat_patch = (
-            np.frombuffer(record["sat_data"], dtype=record["sat_dtype"])
-            .reshape(record["sat_shape"])
-            .astype(np.float32)
-            .copy()
+    def _preprocess(self, date: datetime, record) -> dict:
+        return preprocess_record(
+            date, record, nb_temporal=self.nb_temporal, precip_to_dbz=self.precip_to_dbz
         )
 
-        # --- elevation (H, W) -> (T, 1, H, W), floor negatives/nodata ---
-        if "elevation_data" in record and record.get("elevation_data") is not None:
-            elev = (
-                np.frombuffer(
-                    record["elevation_data"], dtype=record["elevation_dtype"]
-                )
-                .reshape(record["elevation_shape"])
-                .astype(np.float32)
-                .copy()
-            )
-        else:
-            # Parquet file generated without elevation: use zeros so channel
-            # count stays consistent.
-            t_, _, h, w = sat_patch.shape
-            elev = np.zeros((h, w), dtype=np.float32)
-
-        elev = np.where(elev < 0, ELEVATION_FLOOR, elev)
-        elev = elev[None, None, :, :].repeat(sat_patch.shape[0], axis=0)
-
-        # dense conditioning field: GMGSI + elevation
-        sat_patch_data = np.concatenate([sat_patch, elev], axis=1)
-
-        # --- METAR (T, 7, H, W): build validity mask, then fill NaN ---
-        metar_patch = (
-            np.frombuffer(record["metar_data"], dtype=record["metar_dtype"])
-            .reshape(record["metar_shape"])
-            .astype(np.float32)
-            .copy()
-        )
-
-        # Optional log-transform of precipitation mm/h -> dBZ (Marshall-Palmer).
-        # Done before the mask/sentinel fill so 0 mm/h (valid, no rain) becomes
-        # 0 dBZ and NaN (no station) stays NaN -> sentinel.
-        if self.precip_to_dbz:
-            metar_patch[:, METAR_PRECIP_IDX] = mmh_to_dbz(
-                metar_patch[:, METAR_PRECIP_IDX]
-            )
-
-        metar_mask = (~np.isnan(metar_patch)).astype(np.float32)
-        metar_patch_data = np.where(
-            np.isnan(metar_patch), METAR_NAN_SENTINEL, metar_patch
-        )
-
-        # --- crop temporal dim if the row carries more frames than requested ---
-        if sat_patch_data.shape[0] > self.nb_temporal:
-            sat_patch_data = sat_patch_data[: self.nb_temporal]
-        if metar_patch_data.shape[0] > self.nb_temporal:
-            metar_patch_data = metar_patch_data[: self.nb_temporal]
-            metar_mask = metar_mask[: self.nb_temporal]
-
-        # --- sun position features from patch centre + reference time ---
-        lon = float(record["lon"])
-        lat = float(record["lat"])
-
-        sun_pos = get_position(date, lon, lat)
-        date_noon = date.replace(hour=12, minute=0, second=0, microsecond=0)
-        sun_pos_noon = get_position(date_noon, lon, lat)
-
-        spatial_position = torch.tensor(
-            [
-                float(sun_pos["azimuth"]),
-                float(sun_pos["altitude"]),
-                float(sun_pos_noon["altitude"]),
-                lat / 10.0,
-            ],
-            dtype=torch.float32,
-        )
-
-        return {
-            "sat_patch_data": torch.from_numpy(sat_patch_data),
-            "metar_patch_data": torch.from_numpy(metar_patch_data),
-            "metar_mask": torch.from_numpy(metar_mask),
-            "spatial_position": spatial_position,
-        }
-
-    def _resolve_date(self, record: pd.Series) -> datetime:
-        """Reference timestamp of the row, from the `date` column."""
-        date_val = record.get("date")
-        if date_val is None or (isinstance(date_val, float) and np.isnan(date_val)):
-            raise ValueError("record has no usable 'date' field")
-        if isinstance(date_val, datetime):
-            return date_val
-        return datetime.strptime(str(date_val), "%Y-%m-%d %H:%M:%S")
+    def _resolve_date(self, record) -> datetime:
+        return resolve_date(record)
 
     def __getitem__(self, index: int) -> dict:
         if not getattr(self, "worker_initialized", False):
