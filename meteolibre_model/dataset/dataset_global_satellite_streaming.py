@@ -9,6 +9,17 @@ exact same per-row preprocessing (``preprocess_record``) as the map-style
 ``FlashEdgesGlobalDataset`` — so the two are interchangeable from the model's
 perspective.
 
+Hub folder layout
+-----------------
+The dataset generator writes parquet into multiple subfolders (``data/``,
+``data_2022_02/``, ``data_2022_05/``, ...) because of HF's 10k-files-per-folder
+limit.  This loader does NOT rely on HF's path-based split inference (which is
+unreliable for non-``train``-named folders).  Instead it enumerates every
+``.parquet`` file in the repo via ``HfApi().list_repo_files`` and feeds them as
+explicit ``hf://datasets/...`` URLs to the parquet builder, so all subfolders
+are combined into one ``train`` stream regardless of their names.  Pass
+``data_dir="data_2022_02"`` to train on a single subfolder subset.
+
 Key differences vs the map-style dataset
 ----------------------------------------
 * **No random access / no ``__len__``.**  Use ``steps_per_epoch`` in the
@@ -38,22 +49,19 @@ Usage
     )
     dl = DataLoader(ds, batch_size=32, num_workers=4, pin_memory=True)
 
-For local testing without hitting the network, point ``load_dataset`` at local
-parquet files by passing ``data_files`` instead of ``hf_dataset_repo``:
+For local testing without hitting the network, point ``data_files`` at local
+parquet files (recursive glob so dated subfolders are included):
 
     ds = FlashEdgesStreamingDataset(
         hf_dataset_repo=None,
-        data_files="data/*.parquet",
+        data_files="data/**/*.parquet",
         ...
     )
 """
 
-import os
 import random
 from collections import deque
-from datetime import datetime
 
-import numpy as np
 import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
@@ -63,22 +71,66 @@ from meteolibre_model.dataset.dataset_global_satellite_metar import (
 )
 
 
-def _load_streaming_dataset(hf_dataset_repo, split, data_files, streaming=True):
-    """Build the HF IterableDataset, supporting both Hub and local parquet."""
+def _list_hub_parquet_files(hf_dataset_repo: str, data_dir) -> list:
+    """Enumerate every ``.parquet`` file in a HF dataset repo.
+
+    Robust to the multi-folder layout the generator produces (``data/``,
+    ``data_2022_02/``, ``data_2022_05/``, ...) because it does NOT rely on HF's
+    split-folder inference.  ``data_dir`` optionally restricts to one subfolder
+    (e.g. ``"data_2022_02"``) so you can train on a subset.
+    """
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    prefix = f"{data_dir}/" if data_dir else ""
+    paths = api.list_repo_files(hf_dataset_repo, repo_type="dataset")
+    parquet = sorted(
+        p
+        for p in paths
+        if p.endswith(".parquet") and (not prefix or p.startswith(prefix))
+    )
+    if not parquet:
+        raise FileNotFoundError(
+            f"No .parquet files found in '{hf_dataset_repo}'"
+            + (f" under '{data_dir}'" if data_dir else "")
+        )
+    return parquet
+
+
+def _load_streaming_dataset(
+    hf_dataset_repo, split, data_files, data_dir, streaming=True
+):
+    """Build the HF IterableDataset, supporting both Hub and local parquet.
+
+    Hub mode explicitly enumerates parquet files via ``HfApi`` and passes them
+    as ``hf://datasets/...`` URLs to the parquet builder.  This sidesteps HF's
+    path-based split inference, which is unreliable for the generator's
+    multi-folder layout (``data/``, ``data_2022_02/``, ...) and would otherwise
+    silently drop folders or mis-assign splits.
+    """
     from datasets import load_dataset
 
     if hf_dataset_repo is not None:
-        return load_dataset(hf_dataset_repo, split=split, streaming=streaming)
+        paths = _list_hub_parquet_files(hf_dataset_repo, data_dir)
+        urls = [f"hf://datasets/{hf_dataset_repo}/{p}" for p in paths]
+        return load_dataset(
+            "parquet", data_files={split: urls}, split=split, streaming=streaming
+        )
+
     if data_files is None:
         raise ValueError(
             "Either hf_dataset_repo or data_files must be provided."
         )
+
+    # Recursive glob so dated subfolders (data_2022_02/, ...) are included.
     import glob
 
-    files = sorted(glob.glob(data_files))
+    files = sorted(glob.glob(data_files, recursive=True))
     if not files:
         raise FileNotFoundError(f"No parquet files matched: {data_files}")
-    return load_dataset("parquet", data_files={"train": files}, split="train", streaming=streaming)
+    return load_dataset(
+        "parquet", data_files={"train": files}, split="train", streaming=streaming
+    )
 
 
 class FlashEdgesStreamingDataset(IterableDataset):
@@ -89,7 +141,11 @@ class FlashEdgesStreamingDataset(IterableDataset):
             ``"meteolibre-dev/flashedges_global_v1"``).  If None, ``data_files``
             must be set (local parquet glob, useful for tests).
         split (str): HF split name. Default "train".
-        data_files (str | None): Glob of local parquet files for offline mode.
+        data_files (str | None): Recursive glob of local parquet files for
+            offline mode (e.g. ``"data/**/*.parquet"``).  Recursive so dated
+            subfolders (``data_2022_02/``) are included.
+        data_dir (str | None): For Hub mode, restrict to one subfolder
+            (e.g. ``"data_2022_02"``).  None = all subfolders combined.
         shuffle_buffer (int): Number of rows held in the shuffle buffer.  Set to
             0/1 to disable shuffling.  Larger => better decorrelation but more
             RAM (~4 MB per row).  Default 1000.
@@ -101,9 +157,10 @@ class FlashEdgesStreamingDataset(IterableDataset):
 
     def __init__(
         self,
-        hf_dataset_repo: str | None = None,
+        hf_dataset_repo=None,
         split: str = "train",
-        data_files: str | None = None,
+        data_files=None,
+        data_dir=None,
         shuffle_buffer: int = 1000,
         precip_to_dbz: bool = True,
         nb_temporal: int = 7,
@@ -114,6 +171,7 @@ class FlashEdgesStreamingDataset(IterableDataset):
         self.hf_dataset_repo = hf_dataset_repo
         self.split = split
         self.data_files = data_files
+        self.data_dir = data_dir
         self.shuffle_buffer = shuffle_buffer
         self.precip_to_dbz = precip_to_dbz
         self.nb_temporal = nb_temporal
@@ -125,14 +183,22 @@ class FlashEdgesStreamingDataset(IterableDataset):
         wid = worker.id if worker is not None else 0
         import torch.distributed as dist
 
-        rank = dist.get_rank() if (dist.is_available() and dist.is_initialized()) else 0
+        rank = (
+            dist.get_rank()
+            if (dist.is_available() and dist.is_initialized())
+            else 0
+        )
         return self.seed + wid + rank * 100003
 
     def __iter__(self):
         rng = random.Random(self._worker_seed())
 
         ds = _load_streaming_dataset(
-            self.hf_dataset_repo, self.split, self.data_files, streaming=True
+            self.hf_dataset_repo,
+            self.split,
+            self.data_files,
+            self.data_dir,
+            streaming=True,
         )
 
         # `datasets` IterableDataset already shards across workers/ranks when

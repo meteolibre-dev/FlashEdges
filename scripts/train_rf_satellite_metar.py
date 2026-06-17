@@ -110,10 +110,10 @@ def main():
         help="HF dataset repo id for streaming (e.g. meteolibre-dev/flashedges_global_v1).",
     )
     parser.add_argument(
-        "--shuffle_buffer",
-        type=int,
-        default=1000,
-        help="Shuffle buffer size for streaming (rows; ~4MB each). 0 disables.",
+        "--data_dir",
+        type=str,
+        default=None,
+        help="Hub mode: restrict to one subfolder (e.g. data_2022_02). None = all.",
     )
     parser.add_argument(
         "--steps_per_epoch",
@@ -168,14 +168,16 @@ def main():
         dataset = FlashEdgesStreamingDataset(
             hf_dataset_repo=args.hf_dataset_repo,
             split="train",
+            data_dir=args.data_dir,
             shuffle_buffer=args.shuffle_buffer,
             precip_to_dbz=True,
             nb_temporal=7,
             seed=seed,
         )
         streaming = True
-        print(f"  streaming: {args.hf_dataset_repo} (buffer={args.shuffle_buffer}, "
-              f"steps/epoch={args.steps_per_epoch})")
+        scope = f"data_dir={args.data_dir}" if args.data_dir else "all subfolders"
+        print(f"  streaming: {args.hf_dataset_repo} ({scope}, "
+              f"buffer={args.shuffle_buffer}, steps/epoch={args.steps_per_epoch})")
     else:
         dataset = FlashEdgesGlobalDataset(
             localrepo=dataset_path,
