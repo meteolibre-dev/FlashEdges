@@ -20,6 +20,22 @@ explicit ``hf://datasets/...`` URLs to the parquet builder, so all subfolders
 are combined into one ``train`` stream regardless of their names.  Pass
 ``data_dir="data_2022_02"`` to train on a single subfolder subset.
 
+Prefetching
+-----------
+Two layers compose to hide network latency behind GPU compute:
+
+1. **In-dataset row prefetch** (``prefetch_rows``, default 8): a background
+   thread inside each worker pulls upcoming raw rows from the HF stream into a
+   bounded queue.  This is where the actual network I/O lives (one HTTP range
+   request per parquet row-group); the DataLoader's own prefetch can't see
+   inside the streaming iterator, so this layer is essential.  Mirrors
+   ``torchdata.IterableWrapper.prefetch`` but is dependency-free (torchdata is
+   archived).
+2. **DataLoader batch prefetch** (``prefetch_factor``, default 2 when
+   ``num_workers>0``): each worker process prepares batches ahead.  This hides
+   the row→batch collation and transfer latency.  No code needed — it's the
+   PyTorch default.
+
 Key differences vs the map-style dataset
 ----------------------------------------
 * **No random access / no ``__len__``.**  Use ``steps_per_epoch`` in the
@@ -44,6 +60,7 @@ Usage
         hf_dataset_repo="meteolibre-dev/<your-flashedges-dataset>",
         split="train",
         shuffle_buffer=1000,
+        prefetch_rows=8,
         precip_to_dbz=True,
         nb_temporal=7,
     )
@@ -60,6 +77,7 @@ parquet files (recursive glob so dated subfolders are included):
 """
 
 import random
+import threading
 from collections import deque
 
 import torch
@@ -133,6 +151,54 @@ def _load_streaming_dataset(
     )
 
 
+class _PrefetchIter:
+    """Background-thread prefetcher over any iterator.
+
+    Mirrors ``torchdata.IterableWrapper.prefetch(n)`` but is dependency-free
+    (torchdata is archived).  A daemon thread pulls items from ``source`` into a
+    bounded queue; ``__next__`` drains the queue.  This overlaps the network
+    I/O of upcoming rows with the consumer's GPU compute, hiding the per-row
+    latency of HF streaming (one HTTP range request per parquet row-group).
+
+    Exceptions raised in the producer thread are re-raised on the consumer side
+    (StopIteration is treated as end-of-stream, not an error).
+    """
+
+    def __init__(self, source, n: int):
+        import queue
+
+        self.q = queue.Queue(maxsize=max(n, 1))
+        self._sentinel = object()
+        self._exc = None
+        self._thread = threading.Thread(
+            target=self._produce, args=(source,), daemon=True
+        )
+        self._thread.start()
+
+    def _produce(self, source):
+        try:
+            for item in source:
+                self.q.put(item)
+        except StopIteration:
+            pass  # normal end of stream
+        except Exception as e:  # noqa: BLE001 - propagate to consumer
+            self._exc = e
+        finally:
+            self.q.put(self._sentinel)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._exc is not None:
+            e, self._exc = self._exc, None
+            raise e
+        item = self.q.get()
+        if item is self._sentinel:
+            raise StopIteration
+        return item
+
+
 class FlashEdgesStreamingDataset(IterableDataset):
     """IterableDataset wrapping the HF streaming parquet stream.
 
@@ -153,6 +219,11 @@ class FlashEdgesStreamingDataset(IterableDataset):
         nb_temporal (int): Number of temporal frames to emit per row.
         seed (int): Base seed for the shuffle RNG (per-worker).
         max_retries (int): How many times to skip a bad row before giving up.
+        prefetch_rows (int): Number of upcoming rows to fetch in a background
+            thread, overlapping network I/O with GPU compute (mirrors
+            ``torchdata.IterableWrapper.prefetch`` but dependency-free, since
+            torchdata is archived). 0 disables. Default 8.  This layers beneath
+            the DataLoader's own ``prefetch_factor`` (batch-level, default 2).
     """
 
     def __init__(
@@ -166,6 +237,7 @@ class FlashEdgesStreamingDataset(IterableDataset):
         nb_temporal: int = 7,
         seed: int = 42,
         max_retries: int = 8,
+        prefetch_rows: int = 8,
     ):
         super().__init__()
         self.hf_dataset_repo = hf_dataset_repo
@@ -177,6 +249,7 @@ class FlashEdgesStreamingDataset(IterableDataset):
         self.nb_temporal = nb_temporal
         self.seed = seed
         self.max_retries = max_retries
+        self.prefetch_rows = prefetch_rows
 
     def _worker_seed(self) -> int:
         worker = get_worker_info()
@@ -204,6 +277,13 @@ class FlashEdgesStreamingDataset(IterableDataset):
         # `datasets` IterableDataset already shards across workers/ranks when
         # used inside a DataLoader with num_workers>0, so we just iterate.
         it = iter(ds)
+
+        # Background prefetch: overlap the network I/O of upcoming rows with
+        # the consumer's GPU compute. Mirrors torchdata.IterableWrapper.prefetch
+        # but is dependency-free (torchdata is archived). Layers beneath the
+        # DataLoader's own prefetch_factor (batch-level).
+        if self.prefetch_rows > 0:
+            it = _PrefetchIter(it, self.prefetch_rows)
 
         buffer = deque(maxlen=self.shuffle_buffer) if self.shuffle_buffer > 1 else None
 

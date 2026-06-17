@@ -116,6 +116,13 @@ def main():
         help="Hub mode: restrict to one subfolder (e.g. data_2022_02). None = all.",
     )
     parser.add_argument(
+        "--prefetch_rows",
+        type=int,
+        default=8,
+        help="Streaming: rows to prefetch in a background thread (overlaps I/O "
+        "with compute). 0 disables.",
+    )
+    parser.add_argument(
         "--steps_per_epoch",
         type=int,
         default=None,
@@ -158,18 +165,12 @@ def main():
         from meteolibre_model.dataset.dataset_global_satellite_streaming import (
             FlashEdgesStreamingDataset,
         )
-        if args.hf_dataset_repo is None:
-            raise ValueError("--streaming requires --hf_dataset_repo.")
-        if args.steps_per_epoch is None:
-            raise ValueError(
-                "--streaming requires --steps_per_epoch (streaming datasets "
-                "have no length)."
-            )
         dataset = FlashEdgesStreamingDataset(
             hf_dataset_repo=args.hf_dataset_repo,
             split="train",
             data_dir=args.data_dir,
             shuffle_buffer=args.shuffle_buffer,
+            prefetch_rows=args.prefetch_rows,
             precip_to_dbz=True,
             nb_temporal=7,
             seed=seed,
@@ -177,7 +178,8 @@ def main():
         streaming = True
         scope = f"data_dir={args.data_dir}" if args.data_dir else "all subfolders"
         print(f"  streaming: {args.hf_dataset_repo} ({scope}, "
-              f"buffer={args.shuffle_buffer}, steps/epoch={args.steps_per_epoch})")
+              f"buffer={args.shuffle_buffer}, prefetch={args.prefetch_rows}, "
+              f"steps/epoch={args.steps_per_epoch})")
     else:
         dataset = FlashEdgesGlobalDataset(
             localrepo=dataset_path,
