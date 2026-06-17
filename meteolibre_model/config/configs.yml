@@ -1,0 +1,32 @@
+# FlashEdges model configurations
+# sat channels: GMGSI(4) + elevation(1) = 5
+# metar channels: [tmpc, dwpc, mslp, cloud_cover, p01m_dBZ, wind_u, wind_v] = 7
+
+model_v1_global_satellite_metar:
+  log_every_n_steps: 5
+  save_every_n_epochs: 10
+  model_dir: "models/"
+  parametrization: "standard"
+  interpolation: "linear"
+  batch_size: 32
+  learning_rate: 0.0003
+  num_epochs: 500
+  seed: 42
+  sigma_noise_input: 8.0
+  gradient_clip_value: 1.0
+  residual: false
+  dataset_path: "."
+  metar_loss_weight: 1.0
+  model_type: "jit"
+  model:
+    sat_in_channels: 5      # GMGSI 4 + elevation 1
+    kpi_in_channels: 7      # METAR 7 (p01m in dBZ)
+    sat_out_channels: 5
+    kpi_out_channels: 7
+    context_frames: 4
+    img_size: [7, 128, 128]
+    patch_size: [1, 8, 8]
+    embed_dim: 768
+    depth: 12
+    num_heads: 12
+    context_dim: 6          # spatial(4) + t(1) + d(1)

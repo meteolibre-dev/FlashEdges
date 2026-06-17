@@ -1,0 +1,47 @@
+"""
+Normalization constants for the FlashEdges global satellite + METAR model.
+
+Channel layout:
+  sat_patch_data   (T, 5, H, W)  — [gmgsi_lwir, gmgsi_vis, gmgsi_wv,
+                                    gmgsi_sw, elevation]
+  metar_patch_data (T, 7, H, W)  — [tmpc, dwpc, mslp, cloud_cover,
+                                     p01m(dBZ), wind_u, wind_v]
+
+The METAR p01m channel is in dBZ (Marshall-Palmer) because the dataset applies
+the mm/h -> dBZ transform by default.
+
+NOTE: the values below were computed on a 300-sample subset of a single day
+(2021-07-14) via ``scripts/compute_mean_std.py``.  They are structurally correct
+but should be recomputed over the full 4-year HuggingFace dataset for production
+training:
+
+    uv run python scripts/compute_mean_std.py --localrepo . --num_samples -1
+"""
+
+import torch
+
+# --- satellite: GMGSI(4) + elevation(1) ---
+SAT_MEAN = torch.tensor(
+    [110.1661, 53.3306, 166.2017, 113.8926, 747.624], dtype=torch.float32
+)
+SAT_STD = torch.tensor(
+    [33.4048, 54.2021, 22.1352, 28.832, 916.7899], dtype=torch.float32
+)
+
+# --- METAR: [tmpc, dwpc, mslp, cloud_cover, p01m_dBZ, wind_u, wind_v] ---
+METAR_MEAN = torch.tensor(
+    [24.0332, 15.0477, 1017.3679, 0.2766, 0.0849, 0.574, 0.664],
+    dtype=torch.float32,
+)
+METAR_STD = torch.tensor(
+    [6.7002, 5.9932, 5.3278, 0.3042, 6.2245, 2.7808, 3.1393],
+    dtype=torch.float32,
+)
+
+# --- residual stats (future - last_context_frame) ---
+# Placeholder zeros/ones; only used when use_residual=True. Recompute with
+# scripts/compute_mean_std.py in residual mode if enabling residual training.
+SAT_RESIDUAL_MEAN = torch.zeros(5, dtype=torch.float32)
+SAT_RESIDUAL_STD = torch.ones(5, dtype=torch.float32)
+METAR_RESIDUAL_MEAN = torch.zeros(7, dtype=torch.float32)
+METAR_RESIDUAL_STD = torch.ones(7, dtype=torch.float32)

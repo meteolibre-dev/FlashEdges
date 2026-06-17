@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# FlashEdges — local dataset / model artifacts (downloaded from HuggingFace)
+data
+*.safetensors
+*.h5
+*.parquet
+generated_forecasts*/
+runs/
