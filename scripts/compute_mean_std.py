@@ -96,6 +96,7 @@ def compute_mean_std(
 
     pbar = tqdm(dataset, total=n_iter)
     for i, sample in enumerate(pbar):
+
         if n_iter is not None and i >= n_iter:
             break
 
@@ -166,7 +167,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data_files",
         type=str,
-        default="data/**/*.parquet",
+        default="**/*.parquet",
         help="Recursive glob of local parquet files (used when "
         "--hf_dataset_repo is not set). Default 'data/**/*.parquet'.",
     )
@@ -189,7 +190,7 @@ if __name__ == "__main__":
         default=1,
         help="Shuffle buffer rows (1 disables shuffling; fine for stats).",
     )
-    parser.add_argument("--prefetch_rows", type=int, default=8)
+    parser.add_argument("--prefetch_rows", type=int, default=128)
     parser.add_argument("--seed", type=int, default=44)
     args = parser.parse_args()
 

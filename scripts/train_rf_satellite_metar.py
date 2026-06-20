@@ -106,7 +106,7 @@ def main():
     parser.add_argument(
         "--hf_dataset_repo",
         type=str,
-        default=None,
+        default="meteolibre-dev/global_sat_metar",
         help="HF dataset repo id for streaming (e.g. meteolibre-dev/flashedges_global_v1).",
     )
     parser.add_argument(

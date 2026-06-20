@@ -22,10 +22,10 @@ import torch
 
 # --- satellite: GMGSI(4) + elevation(1) ---
 SAT_MEAN = torch.tensor(
-    [110.1661, 53.3306, 166.2017, 113.8926, 747.624], dtype=torch.float32
+    [123.2937, 46.5135, 169.5546, 125.0362, 677.6422], dtype=torch.float32
 )
 SAT_STD = torch.tensor(
-    [33.4048, 54.2021, 22.1352, 28.832, 916.7899], dtype=torch.float32
+    [43.3566, 53.4644, 26.8234, 42.3147, 874.6544], dtype=torch.float32
 )
 
 # --- METAR: [tmpc, dwpc, mslp, cloud_cover, p01m_dBZ, wind_u, wind_v] ---
@@ -34,7 +34,7 @@ METAR_MEAN = torch.tensor(
     dtype=torch.float32,
 )
 METAR_STD = torch.tensor(
-    [6.7002, 5.9932, 5.3278, 0.3042, 6.2245, 2.7808, 3.1393],
+    [10.7002, 7.9932, 8.3278, 0.7042, 6.2245, 6.7808, 6.1393],
     dtype=torch.float32,
 )
 
