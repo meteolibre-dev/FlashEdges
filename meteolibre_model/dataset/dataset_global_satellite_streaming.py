@@ -232,7 +232,7 @@ class FlashEdgesStreamingDataset(IterableDataset):
         split: str = "train",
         data_files=None,
         data_dir=None,
-        shuffle_buffer: int = 1000,
+        shuffle_buffer: int = 100,
         precip_to_dbz: bool = True,
         nb_temporal: int = 7,
         seed: int = 42,
