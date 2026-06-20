@@ -76,12 +76,14 @@ parquet files (recursive glob so dated subfolders are included):
     )
 """
 
+import contextlib
 import random
 import threading
 from collections import deque
 
 import torch
 import torch.distributed as dist
+import torch.utils.data
 from torch.utils.data import IterableDataset, get_worker_info
 
 from meteolibre_model.dataset.dataset_global_satellite_metar import (
@@ -162,6 +164,34 @@ class _PrefetchIter:
         if item is self._sentinel:
             raise StopIteration
         return item
+
+
+@contextlib.contextmanager
+def _no_torch_worker_sharding():
+    """Make HuggingFace ``datasets`` skip its torch-DataLoader worker sharding.
+
+    We shard files across torch DataLoader workers / distributed ranks ourselves
+    (``FlashEdgesStreamingDataset._shard``), so when we iterate a *single-file*
+    ``datasets.IterableDataset`` inside a torch worker we want every row of that
+    file -- not 1/num_workers of them.
+
+    ``datasets`` decides whether to shard by calling
+    ``torch.utils.data.get_worker_info()``: if it returns a worker in a
+    multi-worker DataLoader, ``_iter_pytorch`` splits the file's shards across
+    all torch workers, which for a 1-file dataset means only worker slot 0 gets
+    data and the other workers stream nothing (this also produces the
+    ``"Too many dataloader workers ... max is dataset.num_shards=1"`` warning).
+    Returning ``None`` makes ``datasets`` take the plain single-process path and
+    yield the whole file. The override is scoped to the file read and restored
+    on exit; only the prefetch thread (or the synchronous iterator) touches
+    ``datasets`` in this process, so this is race-free.
+    """
+    orig = torch.utils.data.get_worker_info
+    torch.utils.data.get_worker_info = lambda: None
+    try:
+        yield
+    finally:
+        torch.utils.data.get_worker_info = orig
 
 
 class FlashEdgesStreamingDataset(IterableDataset):
@@ -293,13 +323,17 @@ class FlashEdgesStreamingDataset(IterableDataset):
         while True:
             try:
                 seen = 0
-                for record in self._open_one_file(fpath):
-                    if seen < yielded:  # resume: skip already-emitted records
+                # Disable datasets' torch-worker sharding for this per-file
+                # read: we've already assigned whole files to this worker via
+                # _shard, so we want the full file, not a 1/num_workers slice.
+                with _no_torch_worker_sharding():
+                    for record in self._open_one_file(fpath):
+                        if seen < yielded:  # resume: skip already-emitted records
+                            seen += 1
+                            continue
                         seen += 1
-                        continue
-                    seen += 1
-                    yield record
-                    yielded += 1
+                        yield record
+                        yielded += 1
                 return  # file fully consumed
             except Exception as e:  # noqa: BLE001 - any read failure is retryable
                 attempt += 1
