@@ -30,11 +30,11 @@ SAT_STD = torch.tensor(
 
 # --- METAR: [tmpc, dwpc, mslp, cloud_cover, p01m_dBZ, wind_u, wind_v] ---
 METAR_MEAN = torch.tensor(
-    [24.0332, 15.0477, 1017.3679, 0.2766, 0.0849, 0.574, 0.664],
+    [24.0332, 15.0477, 1017.3679, 0.2766, -3.0849, 0.574, 0.664],
     dtype=torch.float32,
 )
 METAR_STD = torch.tensor(
-    [10.7002, 7.9932, 8.3278, 0.7042, 6.2245, 6.7808, 6.1393],
+    [10.7002, 7.9932, 8.3278, 0.7042, 9.2245, 6.7808, 6.1393],
     dtype=torch.float32,
 )
 
