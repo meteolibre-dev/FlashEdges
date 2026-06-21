@@ -68,8 +68,8 @@ METAR_RESIDUAL_STD = torch.ones(7, dtype=torch.float32)
 #     uv run python scripts/compute_loss_weights.py --num_samples -1
 # and paste the printed tensors here.
 SAT_LOSS_WEIGHT = torch.tensor(
-    [0.9208, 1.1572, 0.9409, 0.9811, 1.0], dtype=torch.float32  # elevation=1.0 (static)
+    [0.9208, 1.1572, 0.9409, 0.9811, 0.5], dtype=torch.float32  # elevation=1.0 (static)
 )
 METAR_LOSS_WEIGHT = torch.tensor(
-    [1.1829, 0.9163, 3.9911, 0.1683, 0.0199, 0.3948, 0.3267], dtype=torch.float32
+    [1.1829, 0.9163, 3.9911, 0.2683, 0.1199, 0.3948, 0.3267], dtype=torch.float32
 )

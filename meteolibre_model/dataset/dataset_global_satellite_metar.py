@@ -200,7 +200,7 @@ def preprocess_record(date: datetime, record, nb_temporal: int, precip_to_dbz: b
             float(sun_pos["azimuth"]),
             float(sun_pos["altitude"]),
             float(sun_pos_noon["altitude"]),
-            lat / 10.0,
+            lat / 25.0,
         ],
         dtype=torch.float32,
     )

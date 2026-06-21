@@ -129,7 +129,7 @@ def main():
     parser.add_argument(
         "--shuffle_buffer",
         type=int,
-        default=100,
+        default=200,
         help="Streaming: rows held in the shuffle buffer for decorrelation "
         "(~4 MB/row; larger => better shuffle but more RAM). Set to 1 to "
         "disable shuffling.",
