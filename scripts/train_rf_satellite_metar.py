@@ -205,6 +205,13 @@ def main():
         )
         streaming = False
 
+    # persistent_workers is REQUIRED for streaming so the dataset's file
+    # cursor survives across epochs -- otherwise each epoch restarts at file 0
+    # and (with a small steps_per_epoch) re-reads the same leading files every
+    # epoch, never reaching the rest of the shard. Only meaningful with >0
+    # workers; a 0-worker DataLoader always reuses the same (main) instance.
+    use_persistent = args.streaming and args.num_workers > 0
+
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -212,6 +219,7 @@ def main():
                         # per-worker file shuffling in __getitem__
         num_workers=args.num_workers,
         pin_memory=True,
+        persistent_workers=use_persistent,
     )
 
 

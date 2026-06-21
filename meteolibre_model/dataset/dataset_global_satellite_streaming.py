@@ -212,7 +212,7 @@ class FlashEdgesStreamingDataset(IterableDataset):
             RAM (~4 MB per row).  Default 1000.
         precip_to_dbz (bool): Convert p01m mm/h -> dBZ (Marshall-Palmer).
         nb_temporal (int): Number of temporal frames to emit per row.
-        seed (int): Base seed for the shuffle RNG (per-worker).
+        seed (int): Base seed for the shuffle RNG (per-worker, per-cycle).
         max_retries (int): Max retries per file on transient read errors
             (HTTP 429 throttling returns a truncated buffer that pyarrow
             rejects as "Parquet magic bytes not found"); also the threshold of
@@ -222,6 +222,19 @@ class FlashEdgesStreamingDataset(IterableDataset):
             ``torchdata.IterableWrapper.prefetch`` but dependency-free, since
             torchdata is archived). 0 disables. Default 8.  This layers beneath
             the DataLoader's own ``prefetch_factor`` (batch-level, default 2).
+
+    Full-dataset coverage across epochs (cursor mode)
+    --------------------------------------------------
+    With a ``steps_per_epoch`` smaller than the whole shard, a naive IterableDataset
+    re-reads the SAME leading files every epoch and never reaches the rest.  To
+    avoid that, this dataset keeps a **file cursor** on the instance and advances
+    it as files are consumed, so epoch N continues where epoch N-1 left off and
+    every file is seen once per full cycle.  This requires
+    ``DataLoader(..., persistent_workers=True)`` so the same dataset instance
+    (and its cursor) survives across epochs; without it, workers are re-spawned
+    each epoch and the cursor resets (falling back to epoch-aware reshuffle, so
+    at least the *order* differs each epoch even if coverage isn't guaranteed).
+    The training script sets ``persistent_workers=True`` automatically.
     """
 
     def __init__(
@@ -248,8 +261,17 @@ class FlashEdgesStreamingDataset(IterableDataset):
         self.seed = seed
         self.max_retries = max_retries
         self.prefetch_rows = prefetch_rows
+        # --- file-cursor state (full-dataset coverage across epochs) ---
+        # Lazily initialized on first __iter__ inside the worker process, where
+        # the worker/rank context is known.  Survives across epochs ONLY when
+        # the DataLoader uses persistent_workers=True; otherwise the worker is
+        # re-spawned each epoch and these reset (cursor mode degrades to a
+        # per-epoch reshuffle, still better than a fixed order).
+        self._file_order: list | None = None
+        self._file_idx = 0
+        self._cycle = 0
 
-    def _worker_seed(self) -> int:
+    def _worker_seed(self, cycle: int = 0) -> int:
         worker = get_worker_info()
         wid = worker.id if worker is not None else 0
         rank = (
@@ -257,7 +279,11 @@ class FlashEdgesStreamingDataset(IterableDataset):
             if (dist.is_available() and dist.is_initialized())
             else 0
         )
-        return self.seed + wid + rank * 100003
+        # ``cycle`` reshuffles the file order once per full pass over the shard
+        # (not once per epoch), so within a cycle the cursor marches through a
+        # stable order (clean, no-repeat coverage) and each new cycle sees a
+        # different permutation.
+        return self.seed + wid + rank * 100003 + cycle * 1_000_003
 
     def _resolve_files(self) -> list:
         """Full parquet file list (Hub ``hf://`` URLs or local paths)."""
@@ -355,21 +381,33 @@ class FlashEdgesStreamingDataset(IterableDataset):
                 time.sleep(backoff)
 
     def __iter__(self):
-        rng = random.Random(self._worker_seed())
+        # Lazy per-worker init of the file order + cursor. Done here (not in
+        # __init__) because sharding needs the worker/rank context, which only
+        # exists inside the worker process.
+        if self._file_order is None:
+            files = self._shard(self._resolve_files())
+            random.Random(self._worker_seed(self._cycle)).shuffle(files)
+            self._file_order = files
+            self._file_idx = 0
 
-        # Resolve the full file list, shard across workers/ranks (each gets a
-        # disjoint slice), and shuffle this worker's order for extra
-        # decorrelation on top of the row-level shuffle buffer.
-        files = self._shard(self._resolve_files())
-        rng.shuffle(files)
-
-        # Resilient raw-row stream: walks files one-by-one, retrying transient
-        # read failures (HF throttling -> truncated buffer -> ArrowInvalid)
-        # with exponential backoff, and skipping a file only after max_retries.
-        # This keeps a single throttled/missing file from killing the epoch --
-        # the old all-files-in-one-load_dataset approach died on the first 429.
+        # Cursor-driven raw-row stream: yields whole files starting from the
+        # persisted cursor, advancing it as we go. With persistent_workers=True
+        # the cursor survives across epochs, so epoch N continues where epoch
+        # N-1 left off -- every file is seen once per full cycle, no repeats
+        # within a cycle. When we wrap past the end, reshuffle for the next
+        # cycle and reset the cursor.
         def raw_rows():
-            for fpath in files:
+            while True:
+                if self._file_idx >= len(self._file_order):
+                    # completed a full pass over this worker's shard: start a
+                    # new cycle with a fresh permutation.
+                    self._cycle += 1
+                    random.Random(self._worker_seed(self._cycle)).shuffle(
+                        self._file_order
+                    )
+                    self._file_idx = 0
+                fpath = self._file_order[self._file_idx]
+                self._file_idx += 1
                 for record in self._iter_file_records(fpath):
                     yield record
 
