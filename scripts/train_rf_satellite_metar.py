@@ -131,6 +131,13 @@ def main():
         "disable shuffling.",
     )
     parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="DataLoader num_workers (file-level sharding lets each worker "
+        "stream its own parquet files in parallel). Default 4.",
+    )
+    parser.add_argument(
         "--steps_per_epoch",
         type=int,
         default=None,
@@ -203,7 +210,7 @@ def main():
         batch_size=batch_size,
         shuffle=False,  # streaming shuffles via buffer; map-style relies on
                         # per-worker file shuffling in __getitem__
-        num_workers=16,
+        num_workers=args.num_workers,
         pin_memory=True,
     )
 
