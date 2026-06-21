@@ -16,7 +16,7 @@ Usage:
 import argparse
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 import torch
 import yaml
@@ -184,7 +184,17 @@ def main():
     metar_loss_weight = params.get("metar_loss_weight", 1.0)
     dataset_path = args.dataset_path or params["dataset_path"]
 
-    id_run = str(datetime.utcnow())[:19]
+    id_run = str(datetime.now(timezone.utc))[:19]
+
+    # Initialize the trackers so accelerator.log(...) and get_tracker(...)
+    # actually work. Without this call, self.trackers stays empty: scalar logs
+    # are silently dropped and get_tracker("tensorboard") returns a blank
+    # GeneralTracker(_blank=True) with no `.writer`, which crashed the
+    # end-of-epoch image logging with AttributeError.
+    accelerator.init_trackers(
+        f"flashedges_global_satellite_metar_{id_run}",
+    )
+
     # --- Dataset: local map-style or HF streaming ---
     if args.streaming:
         from meteolibre_model.dataset.dataset_global_satellite_streaming import (
@@ -348,12 +358,22 @@ def main():
                 )
 
                 tb_tracker = accelerator.get_tracker("tensorboard")
-                if tb_tracker:
-                    tb_tracker.writer.add_image(
+                # Be defensive: a missing/blank tracker (or a version without
+                # .writer) must never crash a full epoch of training. Use the
+                # tracker's SummaryWriter if present, else skip the images.
+                writer = getattr(tb_tracker, "writer", None)
+                if writer is not None:
+                    writer.add_image(
                         "Generated vs Target (GMGSI LWIR)", grid, epoch
                     )
-                    tb_tracker.writer.add_image(
+                    writer.add_image(
                         "Generated vs Target (normalized)", grid_normalized, epoch
+                    )
+                else:
+                    print(
+                        "[viz] TensorBoard writer unavailable; skipping image "
+                        "logging this epoch.",
+                        flush=True,
                     )
 
         # --- Checkpoint ---
