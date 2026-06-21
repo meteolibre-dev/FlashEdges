@@ -73,6 +73,19 @@ ELEVATION_FLOOR = -100.0
 # Index of the precipitation channel (p01m) in METAR_FEATURES.
 METAR_PRECIP_IDX = METAR_FEATURES.index("p01m")
 
+# dBZ value assigned to perfectly dry reports (R = 0 mm/h).
+#
+# Marshall-Palmer maps R>0 to dBZ = 23.01 + 16*log10(R), so trace rain
+# (R ~ 0.01..0.1 mm/h) lands at roughly -9..+7 dBZ. With the natural choice
+# dry -> 0 dBZ, the "definitely no rain" signal sits *inside* the light-rain
+# cluster, so the model cannot cleanly separate dry from drizzle. Pushing dry
+# below that cluster (here -5 dBZ) gives the model a distinct "I am reporting no
+# precipitation" marker separate from "a little". Tune as needed; only affects
+# the dBZ-converted channel (precip_to_dbz=True). NOTE: changing this shifts
+# the p01m distribution, so METAR_MEAN/STD and METAR_LOSS_WEIGHT must be
+# recomputed (see scripts/compute_mean_std.py and compute_loss_weights.py).
+DRY_DBZ = -5.0
+
 
 def mmh_to_dbz(rate_mmh: np.ndarray) -> np.ndarray:
     """Convert rainfall rate (mm/h) to radar reflectivity (dBZ).
@@ -82,7 +95,9 @@ def mmh_to_dbz(rate_mmh: np.ndarray) -> np.ndarray:
     behaved for ML losses than raw mm/h (heavy rain otherwise dominates the
     gradient).
 
-      R = 0   -> 0 dBZ   (no echo, valid station)
+      R = 0   -> DRY_DBZ (-5 by default)   (no echo, valid station -- kept
+                 distinct from trace rain, which Marshall-Palmer places near
+                 0 dBZ)
       R = 1   -> 23 dBZ
       R = 25  -> 45.7 dBZ
       NaN     -> NaN     (no station; left for the sentinel fill)
@@ -91,7 +106,7 @@ def mmh_to_dbz(rate_mmh: np.ndarray) -> np.ndarray:
     finite = np.isfinite(rate_mmh)
     dry = finite & (rate_mmh <= 0.0)
     wet = finite & (rate_mmh > 0.0)
-    out[dry] = 0.0
+    out[dry] = DRY_DBZ
     out[wet] = 10.0 * np.log10(200.0) + 16.0 * np.log10(rate_mmh[wet])
     return out
 

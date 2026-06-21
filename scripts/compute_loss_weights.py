@@ -52,10 +52,25 @@ from meteolibre_model.diffusion.utils import SAT_MEAN, SAT_STD, METAR_MEAN, META
 SAT_CHANNEL_NAMES = ["gmgsi_lwir", "gmgsi_vis", "gmgsi_wv", "gmgsi_sw", "elevation"]
 ELEVATION_CHANNEL_IDX = 4
 
+# Channels that are (near-)constant in time. The FastNet s_j = 1/Var[Delta_x]
+# weighting is only meaningful for *dynamic* forecast targets: for a static
+# channel Var[Delta_x] -> 0 and the inverse-variance weight explodes, letting
+# that channel capture ~the entire branch loss even though it is a trivial
+# target the model can copy from context. In FastNet, orography / land-sea-mask
+# / elevation are input-only -- never forecast targets. Our model predicts
+# elevation (sat channel 4) for autoregressive rollout integrity, so we keep it
+# in the loss, but we exclude it from the FastNet weighting and give it a
+# NEUTRAL weight of 1.0 (same contribution as before this change). The dynamic
+# channels are mean-normalized to 1 *among themselves*.
+STATIC_SAT_CHANNELS = {ELEVATION_CHANNEL_IDX}
+# (No static channels in METAR -- all 7 are genuine time-varying observations.)
+STATIC_METAR_CHANNELS = set()
+
 # Floor on Var[Delta_x] (in normalized space, where field variance ~= 1). A
 # value of 1e-3 corresponds to a per-frame change of ~3% of the field std.
 # Below this a channel is treated as "essentially static" so its weight does not
-# explode to infinity (e.g. elevation, which is constant in time).
+# explode to infinity (defensive only -- static channels are handled explicitly
+# via STATIC_SAT_CHANNELS / STATIC_METAR_CHANNELS and given a neutral weight).
 VAR_FLOOR = 1e-3
 
 
@@ -145,21 +160,40 @@ def compute(
     sat_d_var_floored = np.maximum(sat_d_var, VAR_FLOOR)
     met_d_var_floored = np.maximum(met_d_var, VAR_FLOOR)
 
-    # raw inverse-variance weights, then mean-normalized to 1 per branch so the
-    # total loss scale and the sat:metar branch balance are preserved.
-    sat_raw_w = 1.0 / sat_d_var_floored
-    met_raw_w = 1.0 / met_d_var_floored
-    sat_w = sat_raw_w / np.mean(sat_raw_w)
-    met_w = met_raw_w / np.mean(met_raw_w)
+    def _weights(var_floored, n, static_idx):
+        """FastNet s_j = 1/Var[Delta_x], mean-normalized to 1 over DYNAMIC
+        channels only; static channels get a neutral weight of 1.0."""
+        is_dynamic = np.ones(n, dtype=bool)
+        is_dynamic[list(static_idx)] = False
+        raw = np.zeros(n, dtype=np.float64)
+        raw[is_dynamic] = 1.0 / var_floored[is_dynamic]
+        # mean-normalize over the dynamic channels only
+        dyn_mean = raw[is_dynamic].mean() if is_dynamic.any() else 1.0
+        w = raw / dyn_mean
+        w[~is_dynamic] = 1.0  # neutral weight for static channels
+        return w
 
-    def _print(title, names, mean, var, cnt, w):
+    sat_w = _weights(sat_d_var_floored, n_sat, STATIC_SAT_CHANNELS)
+    met_w = _weights(met_d_var_floored, n_met, STATIC_METAR_CHANNELS)
+
+    def _print(title, names, mean, var, cnt, w, static_idx):
         print(f"\n=== {title} (normalized time-difference stats) ===")
-        print(f"  {'channel':14s} {'E[d]':>10s} {'Var[d]':>10s} {'count':>12s} {'weight':>10s}")
+        print(f"  {'channel':14s} {'E[d]':>10s} {'Var[d]':>10s} {'count':>12s} {'weight':>10s}  note")
         for name, m, v, c, ww in zip(names, mean, var, cnt, w):
-            print(f"  {name:14s} {m:10.4f} {v:10.4f} {c:12d} {ww:10.4f}")
+            tag = "STATIC -> neutral w=1.0" if name in static_idx else ""
+            print(f"  {name:14s} {m:10.4f} {v:10.4f} {c:12d} {ww:10.4f}  {tag}")
 
-    _print("sat_patch_data", SAT_CHANNEL_NAMES, sat_d_mean, sat_d_var, sat_d_cnt, sat_w)
-    _print("metar_patch_data", METAR_FEATURES, met_d_mean, met_d_var, met_d_cnt, met_w)
+    _print("sat_patch_data", SAT_CHANNEL_NAMES, sat_d_mean, sat_d_var, sat_d_cnt,
+           sat_w, {SAT_CHANNEL_NAMES[i] for i in STATIC_SAT_CHANNELS})
+    _print("metar_patch_data", METAR_FEATURES, met_d_mean, met_d_var, met_d_cnt,
+           met_w, set())
+
+    # sanity: report each branch's weight share so dominant channels are obvious
+    print("\n# weight share (fraction of branch loss per channel):")
+    for name, ww in zip(SAT_CHANNEL_NAMES, sat_w):
+        print(f"#   sat    {name:14s} {ww/sat_w.sum()*100:5.1f}%")
+    for name, ww in zip(METAR_FEATURES, met_w):
+        print(f"#   metar  {name:14s} {ww/met_w.sum()*100:5.1f}%")
 
     print("\n# paste-ready (into meteolibre_model/diffusion/utils.py):")
     print("# SAT_LOSS_WEIGHT  (s_j = 1/Var[Delta_x], mean-normalized)")

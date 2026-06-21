@@ -48,18 +48,28 @@ METAR_RESIDUAL_STD = torch.ones(7, dtype=torch.float32)
 
 # --- FastNet-style per-channel loss weights (s_j = 1 / Var[Delta_x_j]) -------
 # Per-channel inverse variance of the *normalized* time-difference, mean-
-# normalized to 1 within each branch. This equalizes the per-channel gradient
-# contribution: channels that barely move frame-to-frame (e.g. elevation, mslp)
-# would otherwise contribute almost nothing to a plain masked-MSE, while fast
-# channels (GMGSI LWIR, wind) dominate. See FastNet (arxiv 2509.17601) eq. 7.
+# normalized to 1 within each branch over the DYNAMIC channels only. This
+# equalizes the per-channel gradient contribution: channels that barely move
+# frame-to-frame would otherwise contribute almost nothing to a plain masked-
+# MSE, while fast channels dominate. See FastNet (arxiv 2509.17601) eq. 7.
+#
+# STATIC channels (constant in time, e.g. elevation) get a NEUTRAL weight of
+# 1.0 instead of the FastNet weight: their Var[Delta_x] ~ 0 so 1/Var explodes
+# and would let them capture ~the entire branch loss even though they are
+# trivial targets (FastNet itself keeps orography / land-sea-mask as input-
+# only, never forecast targets). We keep elevation as a target for rollout
+# integrity but at its old neutral contribution.
 #
 # Mean-normalization keeps the total loss scale AND the satellite:METAR branch
 # balance identical to the previous unweighted masked-mean; only the intra-
 # branch per-channel balance is adjusted.
 #
-# These defaults are all-ones => identical to the previous unweighted loss.
-# RECOMPUTE over the full dataset with:
+# Recompute over the full dataset with:
 #     uv run python scripts/compute_loss_weights.py --num_samples -1
 # and paste the printed tensors here.
-SAT_LOSS_WEIGHT = torch.ones(5, dtype=torch.float32)
-METAR_LOSS_WEIGHT = torch.ones(7, dtype=torch.float32)
+SAT_LOSS_WEIGHT = torch.tensor(
+    [0.9208, 1.1572, 0.9409, 0.9811, 1.0], dtype=torch.float32  # elevation=1.0 (static)
+)
+METAR_LOSS_WEIGHT = torch.tensor(
+    [1.1829, 0.9163, 3.9911, 0.1683, 0.0199, 0.3948, 0.3267], dtype=torch.float32
+)
