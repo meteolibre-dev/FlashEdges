@@ -143,6 +143,16 @@ def main():
         default=4000,
         help="Steps per epoch when streaming (no length available). Required for streaming.",
     )
+    parser.add_argument(
+        "--metar_drop_frac",
+        type=float,
+        default=0.20,
+        help="Fraction of valid-station METAR pixels to randomly hide in the "
+        "conditioning context each step (self-supervised spatial fill): the "
+        "model must reconstruct them in the forecast from satellite + the "
+        "remaining stations, so it learns to output a full METAR image even "
+        "where no station reported. 0 disables. Default 0.20.",
+    )
     args = parser.parse_args()
 
     params = load_config(args.config)
@@ -273,6 +283,7 @@ def main():
                     sigma=sigma_noise_input,
                     use_residual=residual,
                     metar_loss_weight=metar_loss_weight,
+                    metar_drop_frac=args.metar_drop_frac,
                 )
 
                 accelerator.backward(loss)

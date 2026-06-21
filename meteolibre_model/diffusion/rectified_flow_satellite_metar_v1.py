@@ -155,6 +155,7 @@ def trainer_step(
     interpolation="linear",
     use_residual=True,
     metar_loss_weight=1.0,
+    metar_drop_frac=0.20,
 ):
     """One flow-matching training step with x-prediction.
 
@@ -227,6 +228,39 @@ def trainer_step(
         x_context_t = x_context_t + noise_sigma * torch.randn_like(x_context)
     else:
         x_context_t = x_context
+
+    # --- METAR context dropout (self-supervised spatial fill) ----------
+    # Randomly hide a fraction of the valid-station METAR pixels in the
+    # conditioning context, replacing them with the no-data sentinel (CLIP_MIN,
+    # the same value the model already sees at non-station pixels). The model
+    # must then reconstruct those pixels in the forecast from satellite + the
+    # remaining ~80% of stations, instead of just echoing the sparse input.
+    # Over training this teaches spatial generalization, so at inference the
+    # model can emit a plausible *full* METAR image even where no station
+    # reported. The drop mask is per-sample and spatial (B, H, W): stations are
+    # fixed in space, so a hidden station is dropped across all context frames
+    # and all 7 METAR channels at once. The loss is unaffected (it still covers
+    # every valid target-frame station, including the hidden ones -- which is
+    # exactly the reconstruction signal we want). METAR is ~8e-5 fill, so we
+    # drop among *valid* positions ("drop 20% of the HxW grid" would be a no-op
+    # on the already-empty pixels).
+    if metar_drop_frac > 0:
+        metar_ctx_valid = metar_mask[:, :, : model.context_frames].bool()  # (B,7,ctx,H,W)
+        present = metar_ctx_valid.any(dim=1).any(dim=1)                    # (B,H,W)
+        drop = (
+            torch.rand(b, h, w, device=device) < metar_drop_frac
+        ) & present                                                         # (B,H,W)
+        if drop.any():
+            drop_e = drop.view(b, 1, 1, h, w)  # broadcast over (c_metar, ctx)
+            # clone first: x_context_t may be a view into batch_data, and the
+            # last context frame feeds the residual target, so we must not
+            # mutate it in place.
+            x_context_t = x_context_t.clone()
+            x_context_t[:, c_sat:] = torch.where(
+                drop_e,
+                torch.full_like(x_context_t[:, c_sat:], CLIP_MIN),
+                x_context_t[:, c_sat:],
+            )
 
     xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp, 1, 1, 1, 1), interpolation)
 
