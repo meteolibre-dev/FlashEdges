@@ -32,11 +32,15 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, project_root)
 
 from meteolibre_model.dataset.dataset_global_satellite_metar import FlashEdgesGlobalDataset
+from meteolibre_model.dataset.dataset_global_satellite_metar import METAR_FEATURES
 from meteolibre_model.diffusion.rectified_flow_satellite_metar_v1 import (
     trainer_step,
     full_image_generation,
 )
 from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
+
+# sat channel names mirror scripts/compute_mean_std.py
+SAT_CHANNEL_NAMES = ["gmgsi_lwir", "gmgsi_vis", "gmgsi_wv", "gmgsi_sw", "elevation"]
 
 
 def load_config(config_name: str):
@@ -284,7 +288,7 @@ def main():
         )
         for batch in progress_bar:
             with accelerator.accumulate(model):
-                loss, loss_sat, loss_metar = trainer_step(
+                loss, loss_sat, loss_metar, components = trainer_step(
                     model,
                     batch,
                     device,
@@ -305,15 +309,23 @@ def main():
                 n_steps_epoch += 1
 
                 if global_step % LOG_EVERY_N_STEPS == 0 and accelerator.is_main_process:
-                    accelerator.log(
-                        {"Loss/train": loss.item()}, step=global_step
-                    )
-                    accelerator.log(
-                        {"Loss_sat/train": loss_sat.item()}, step=global_step
-                    )
-                    accelerator.log(
-                        {"Loss_metar/train": loss_metar.item()}, step=global_step
-                    )
+                    accelerator.log({"Loss/train": loss.item()}, step=global_step)
+                    accelerator.log({"Loss_sat/train": loss_sat.item()}, step=global_step)
+                    accelerator.log({"Loss_metar/train": loss_metar.item()}, step=global_step)
+                    # Per-channel masked-MSE (FastNet-style diagnostics). These
+                    # reveal which channels dominate each branch's loss -- the
+                    # key signal for deciding whether the sat/metar imbalance is
+                    # structural (e.g. dBZ precip is always hard) or a weight bug.
+                    sat_pc = components["sat_per_chan"].tolist()
+                    metar_pc = components["metar_per_chan"].tolist()
+                    for name, v in zip(SAT_CHANNEL_NAMES, sat_pc):
+                        accelerator.log(
+                            {f"Loss_sat_chan/{name}": v}, step=global_step
+                        )
+                    for name, v in zip(METAR_FEATURES, metar_pc):
+                        accelerator.log(
+                            {f"Loss_metar_chan/{name}": v}, step=global_step
+                        )
 
                 total_loss += loss.item()
                 progress_bar.set_postfix(

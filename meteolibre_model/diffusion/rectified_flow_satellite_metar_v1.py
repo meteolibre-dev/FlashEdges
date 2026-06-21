@@ -32,6 +32,8 @@ from meteolibre_model.diffusion.utils import (
     SAT_RESIDUAL_STD,
     METAR_RESIDUAL_MEAN,
     METAR_RESIDUAL_STD,
+    SAT_LOSS_WEIGHT,
+    METAR_LOSS_WEIGHT,
 )
 
 # -- Parameters --
@@ -159,7 +161,16 @@ def trainer_step(
 ):
     """One flow-matching training step with x-prediction.
 
-    Returns (total_loss, loss_sat, loss_metar).
+    Loss = loss_sat + metar_loss_weight * loss_metar, where each branch is a
+    per-channel masked MSE weighted by FastNet-style inverse time-difference
+    variance (see SAT_LOSS_WEIGHT / METAR_LOSS_WEIGHT in diffusion.utils).
+    ``metar_loss_weight`` is now a *branch-level* master knob (default 1.0);
+    the per-channel balance inside each branch is handled automatically by the
+    s_j weights.
+
+    Returns (total_loss, loss_sat, loss_metar, components) where ``components``
+    is a dict of detached per-channel masked-MSE tensors
+    (``sat_per_chan``, ``metar_per_chan``) for diagnostic logging.
     """
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -291,23 +302,45 @@ def trainer_step(
     weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2
     weight = weight.clamp(0.9, 10.0)
 
-    # --- sat loss: masked by GMGSI validity ---
-    sat_diff = weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2
-    if sat_mask_emp.any():
-        loss_sat = sat_diff[sat_mask_emp].mean()
-    else:
-        loss_sat = sat_diff.mean()
+    # --- FastNet-style per-channel loss weights (s_j = 1 / Var[Delta_x_j]) ---
+    # Weighting each output channel by the inverse variance of its
+    # time-difference equalizes the per-channel gradient contribution
+    # (FastNet, arxiv 2509.17601, eq. 7). Precomputed in normalized space
+    # (where this loss lives) and mean-normalized to 1 per branch, so the total
+    # loss scale and the sat:metar branch balance are preserved -- only the
+    # intra-branch per-channel balance changes. Defaults are all-ones (i.e. the
+    # previous unweighted masked-mean) until you run
+    # ``scripts/compute_loss_weights.py`` and paste the result into utils.py.
+    sat_lw = SAT_LOSS_WEIGHT.to(device)[:c_sat]        # (c_sat,)
+    metar_lw = METAR_LOSS_WEIGHT.to(device)[:c_metar]  # (c_metar,)
 
-    # --- METAR loss: masked by valid-station mask (sparse!) ---
+    # --- sat loss: per-channel masked mean, then s_j-weighted channel mean ---
+    sat_diff = weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2  # (B,c_sat,T,H,W)
+    sat_m = sat_mask_emp.float()
+    sat_cnt = sat_m.sum(dim=(0, 2, 3, 4)).clamp(min=1.0)               # (c_sat,)
+    sat_per_chan = (sat_diff * sat_m).sum(dim=(0, 2, 3, 4)) / sat_cnt  # (c_sat,)
+    loss_sat = (sat_per_chan * sat_lw).mean()
+
+    # --- METAR loss: same, masked by the valid-station mask (sparse!) -------
+    # Computing the per-channel masked mean (instead of a single scalar over
+    # all channels) keeps every METAR channel's error visible: a scalar
+    # loss_metar hides a 7-way imbalance between dBZ precip, wind u/v,
+    # temperature, dewpoint, etc. When a batch has no stations at all, every
+    # channel count is 0 -> per_chan is 0 -> loss_metar is 0 (no NaN, no step
+    # skipped), matching the previous behaviour.
     metar_diff = weight * (x_metar_pred_emp - x0_emp[:, c_sat:]) ** 2
-    if metar_mask_emp.any():
-        loss_metar = metar_diff[metar_mask_emp].mean()
-    else:
-        # No station in this batch — don't penalize metar, don't NaN the step.
-        loss_metar = torch.zeros((), device=device)
+    met_m = metar_mask_emp.float()
+    met_cnt = met_m.sum(dim=(0, 2, 3, 4)).clamp(min=1.0)               # (c_metar,)
+    metar_per_chan = (metar_diff * met_m).sum(dim=(0, 2, 3, 4)) / met_cnt  # (c_metar,)
+    loss_metar = (metar_per_chan * metar_lw).mean()
 
     total = loss_sat + metar_loss_weight * loss_metar
-    return total, loss_sat, loss_metar
+
+    components = {
+        "sat_per_chan": sat_per_chan.detach(),
+        "metar_per_chan": metar_per_chan.detach(),
+    }
+    return total, loss_sat, loss_metar, components
 
 
 def full_image_generation(

@@ -45,3 +45,21 @@ SAT_RESIDUAL_MEAN = torch.zeros(5, dtype=torch.float32)
 SAT_RESIDUAL_STD = torch.ones(5, dtype=torch.float32)
 METAR_RESIDUAL_MEAN = torch.zeros(7, dtype=torch.float32)
 METAR_RESIDUAL_STD = torch.ones(7, dtype=torch.float32)
+
+# --- FastNet-style per-channel loss weights (s_j = 1 / Var[Delta_x_j]) -------
+# Per-channel inverse variance of the *normalized* time-difference, mean-
+# normalized to 1 within each branch. This equalizes the per-channel gradient
+# contribution: channels that barely move frame-to-frame (e.g. elevation, mslp)
+# would otherwise contribute almost nothing to a plain masked-MSE, while fast
+# channels (GMGSI LWIR, wind) dominate. See FastNet (arxiv 2509.17601) eq. 7.
+#
+# Mean-normalization keeps the total loss scale AND the satellite:METAR branch
+# balance identical to the previous unweighted masked-mean; only the intra-
+# branch per-channel balance is adjusted.
+#
+# These defaults are all-ones => identical to the previous unweighted loss.
+# RECOMPUTE over the full dataset with:
+#     uv run python scripts/compute_loss_weights.py --num_samples -1
+# and paste the printed tensors here.
+SAT_LOSS_WEIGHT = torch.ones(5, dtype=torch.float32)
+METAR_LOSS_WEIGHT = torch.ones(7, dtype=torch.float32)
