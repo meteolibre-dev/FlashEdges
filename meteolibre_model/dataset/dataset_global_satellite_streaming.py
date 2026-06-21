@@ -381,6 +381,11 @@ class FlashEdgesStreamingDataset(IterableDataset):
                 time.sleep(backoff)
 
     def __iter__(self):
+        # RNG for the row-level shuffle buffer (per worker + cycle, so each
+        # cycle reshuffles the buffer differently). Seeded once per epoch
+        # iteration -- it's only used for buffer sampling, not file order.
+        rng = random.Random(self._worker_seed(self._cycle))
+
         # Lazy per-worker init of the file order + cursor. Done here (not in
         # __init__) because sharding needs the worker/rank context, which only
         # exists inside the worker process.
