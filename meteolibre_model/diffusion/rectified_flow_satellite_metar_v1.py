@@ -213,8 +213,11 @@ def trainer_step(
 
     # progressive context blur augmentation
     if sigma > 0:
-        eps = torch.randn(num_emp, device=device)
-        t_emp_blur = torch.sigmoid(1.4 + 1.8 * eps).clamp(1e-4, 1 - 1e-4)
+        # eps = torch.randn(num_emp, device=device)
+        # t_emp_blur = torch.sigmoid(1.4 + 1.8 * eps).clamp(1e-4, 1 - 1e-4)
+
+        t_emp_blur = torch.rand(num_emp, device=device)
+
         blur_sigma = t_emp_blur * sigma
         x_context_t = apply_blur_with_sigma_batched(x_context, blur_sigma)
 

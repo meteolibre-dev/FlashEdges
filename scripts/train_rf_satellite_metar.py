@@ -125,7 +125,7 @@ def main():
     parser.add_argument(
         "--shuffle_buffer",
         type=int,
-        default=1000,
+        default=100,
         help="Streaming: rows held in the shuffle buffer for decorrelation "
         "(~4 MB/row; larger => better shuffle but more RAM). Set to 1 to "
         "disable shuffling.",
@@ -133,14 +133,14 @@ def main():
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=4,
+        default=10,
         help="DataLoader num_workers (file-level sharding lets each worker "
         "stream its own parquet files in parallel). Default 4.",
     )
     parser.add_argument(
         "--steps_per_epoch",
         type=int,
-        default=None,
+        default=4000,
         help="Steps per epoch when streaming (no length available). Required for streaming.",
     )
     args = parser.parse_args()
@@ -223,7 +223,10 @@ def main():
 
     # --- Optimizer: Muon (2D) + AdamW (rest) ---
     muon_params, adamw_params = get_grouped_params(model)
-    opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
+    # opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
+    opt_muon = torch.optim.AdamW(
+        muon_params, lr=learning_rate, weight_decay=0.01
+    )
     opt_adam = torch.optim.AdamW(
         adamw_params, lr=learning_rate / 3, weight_decay=0.01
     )

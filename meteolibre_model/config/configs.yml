@@ -4,7 +4,7 @@
 
 model_v1_global_satellite_metar:
   log_every_n_steps: 5
-  save_every_n_epochs: 10
+  save_every_n_epochs: 2
   model_dir: "models/"
   parametrization: "standard"
   interpolation: "linear"
@@ -27,6 +27,6 @@ model_v1_global_satellite_metar:
     img_size: [7, 128, 128]
     patch_size: [1, 8, 8]
     embed_dim: 768
-    depth: 8
+    depth: 12
     num_heads: 12
     context_dim: 6          # spatial(4) + t(1) + d(1)

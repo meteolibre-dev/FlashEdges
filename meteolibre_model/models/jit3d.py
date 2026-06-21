@@ -227,7 +227,7 @@ class JiT3D_Modern(nn.Module):
         time_emb_dim=64,
         n_context_frames=4,         # how many frames are "context" at the start of x
         # --- Corruption hyperparams ---
-        corruption_prob: float = 0.5,
+        corruption_prob: float = 0.3,
         embed_noise_scale: float = 0.10,
         block0_noise_scale: float = 0.05,
     ):
