@@ -157,26 +157,22 @@ def trainer_step(
     parametrization="standard",
     interpolation="linear",
     use_residual=True,
+    metar_loss_weight=0.05,
     metar_drop_frac=0.05,
 ):
     """One flow-matching training step with x-prediction.
 
-    Each branch is a per-channel masked MSE weighted by FastNet-style inverse
-    time-difference variance (see SAT_LOSS_WEIGHT / METAR_LOSS_WEIGHT in
-    diffusion.utils). The sat and metar branches are then combined by
-    *learnable uncertainty weighting* (Kendall, Gal & Cipolla, CVPR 2018) using
-    ``model.log_vars`` (shape (2,) = [sat, metar]) instead of a fixed branch
-    weight: the effective weight on branch i is exp(-log_vars[i]). A noisy,
-    high-variance branch (METAR point obs of wind/gust) grows a larger log_var
-    over training and is automatically downweighted, instead of a static weight
-    letting the high METAR loss starve the satellite branch of gradient. The
-    ``+ log_vars[i]`` regularizer prevents the trivial collapse of all weights
-    to 0.
+    Loss = loss_sat + metar_loss_weight * loss_metar, where each branch is a
+    per-channel masked MSE weighted by FastNet-style inverse time-difference
+    variance (see SAT_LOSS_WEIGHT / METAR_LOSS_WEIGHT in diffusion.utils).
+    ``metar_loss_weight`` (default 0.05) is a simple static branch-level knob;
+    the per-channel balance inside each branch is handled automatically by the
+    s_j weights. The low metar weight keeps METAR's high-variance point-obs
+    loss from starving the satellite branch of gradient.
 
     Returns (total_loss, loss_sat, loss_metar, components) where ``components``
-    is a dict of detached diagnostics: per-channel masked-MSE
-    (``sat_per_chan``, ``metar_per_chan``) and the effective learned branch
-    weights (``loss_weight_sat``, ``loss_weight_metar``).
+    is a dict of detached per-channel masked-MSE tensors
+    (``sat_per_chan``, ``metar_per_chan``) for diagnostic logging.
     """
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -365,27 +361,11 @@ def trainer_step(
     metar_per_chan = (metar_diff * met_m).sum(dim=(0, 2, 3, 4)) / met_cnt  # (c_metar,)
     loss_metar = (metar_per_chan * metar_lw).mean()
 
-    # --- Uncertainty weighting (Kendall, Gal & Cipolla, CVPR 2018) ---------
-    # ``model.log_vars`` (shape (2,) = [sat, metar]) holds learnable
-    # log-variances s_i = log(sigma_i^2); the effective branch weight is
-    # exp(-s_i). A noisy branch -- METAR point obs of turbulent wind/gust --
-    # grows a larger s_i over training and is automatically downweighted,
-    # freeing gradient for the better-specified satellite branch (which
-    # otherwise starves when a static metar weight lets the high-variance
-    # METAR loss dominate). The ``+ s_i`` regularizer prevents the trivial
-    # collapse of all weights -> 0. ``log_vars`` is a registered Parameter on
-    # the model and is updated by the main optimizer.
-    s_sat, s_metar = model.log_vars.unbind()
-    total = (
-        loss_sat * torch.exp(-s_sat) + s_sat
-        + loss_metar * torch.exp(-s_metar) + s_metar
-    )
+    total = loss_sat + metar_loss_weight * loss_metar
 
     components = {
         "sat_per_chan": sat_per_chan.detach(),
         "metar_per_chan": metar_per_chan.detach(),
-        "loss_weight_sat": torch.exp(-s_sat).detach(),
-        "loss_weight_metar": torch.exp(-s_metar).detach(),
     }
     return total, loss_sat, loss_metar, components
 

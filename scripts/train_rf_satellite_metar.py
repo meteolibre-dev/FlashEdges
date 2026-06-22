@@ -16,7 +16,6 @@ Usage:
 import argparse
 import os
 import sys
-import math
 import random
 from datetime import datetime, timezone
 
@@ -189,6 +188,7 @@ def main():
     residual = bool(params.get("residual", False))
     sigma_noise_input = params.get("sigma_noise_input", 0.0)
     gradient_clip_value = params["gradient_clip_value"]
+    metar_loss_weight = params.get("metar_loss_weight", 0.05)
     dataset_path = args.dataset_path or params["dataset_path"]
 
     id_run = str(datetime.now(timezone.utc))[:19]
@@ -255,26 +255,10 @@ def main():
     assert params["model_type"] == "jit", "Only 'jit' model_type is supported"
     model = DualJiT3D(**model_params)
 
-    # Learnable uncertainty weights for adaptive sat/metar loss balancing
-    # (Kendall, Gal & Cipolla, CVPR 2018). log_vars = log(sigma^2) per branch;
-    # the effective weight on branch i is exp(-log_vars[i]). Registered as a
-    # model Parameter so it is (a) picked up by get_grouped_params / the
-    # optimizer, (b) kept in sync across DDP processes by accelerator.prepare,
-    # and (c) saved/loaded with the checkpoint.
-    #
-    # Init sat weight = 1.0, metar weight = 0.3 -- the manual rebalance we'd
-    # have picked by hand to stop METAR's high-variance loss from starving the
-    # satellite branch. Uncertainty weighting then adapts these from this
-    # warm-start. log_vars[i] = -log(weight_i), so sat -> 0.0, metar -> 1.204.
-    model.log_vars = nn.Parameter(
-        torch.tensor([0.0, -math.log(0.3)])
-    )  # [sat, metar] -> exp(-s) = [1.0, 0.3]
-
     model_path = "models/checkpoint.safetensors"
     state_dict = load_file(model_path)
-    # strict=False: load only the keys present in the checkpoint; new params
-    # (log_vars, the split decoder heads) keep their initialization. Starting
-    # a full retrain, so the split decoder heads are initialized fresh.
+    # strict=False: load only the keys present in the checkpoint; the split
+    # decoder heads keep their fresh initialization. Starting a full retrain.
     model.load_state_dict(state_dict, strict=False)
 
     model = torch.compile(model)
@@ -323,7 +307,7 @@ def main():
                     sigma=sigma_noise_input,
                     use_residual=residual,
                     metar_drop_frac=args.metar_drop_frac,
-                )
+                    metar_loss_weight=metar_loss_weight,                )
 
                 accelerator.backward(loss)
                 accelerator.clip_grad_norm_(model.parameters(), gradient_clip_value)
@@ -351,24 +335,12 @@ def main():
                         accelerator.log(
                             {f"Loss_metar_chan/{name}": v}, step=global_step
                         )
-                    # Effective learned branch weights (uncertainty weighting).
-                    # Tracks how the model reallocates gradient between sat and
-                    # metar: expect weight_metar to drift down as it absorbs the
-                    # METAR noise floor, and weight_sat to stay O(1).
-                    accelerator.log(
-                        {
-                            "LossWeight/sat": components["loss_weight_sat"].item(),
-                            "LossWeight/metar": components["loss_weight_metar"].item(),
-                        },
-                        step=global_step,
-                    )
 
                 total_loss += loss.item()
                 progress_bar.set_postfix(
                     loss=f"{loss.item():.4f}",
                     sat=f"{loss_sat.item():.4f}",
                     metar=f"{loss_metar.item():.4f}",
-                    w_metar=f"{components['loss_weight_metar'].item():.2f}",
                 )
 
             if epoch_step_limit is not None and n_steps_epoch >= epoch_step_limit:
