@@ -16,6 +16,7 @@ Usage:
 import argparse
 import os
 import sys
+import random
 from datetime import datetime, timezone
 
 import torch
@@ -182,7 +183,7 @@ def main():
     batch_size = params["batch_size"]
     learning_rate = params["learning_rate"]
     num_epochs = params["num_epochs"]
-    seed = params["seed"]
+    seed = params["seed"] + int(random.random() * 1000)
     residual = bool(params.get("residual", False))
     sigma_noise_input = params.get("sigma_noise_input", 0.0)
     gradient_clip_value = params["gradient_clip_value"]
