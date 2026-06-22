@@ -48,9 +48,10 @@ def normalize(sat_data, metar_data, device):
     """Normalize sat (5ch) and metar (7ch) batches using precomputed stats.
 
     GMGSI NaN (off-disk) should be filled with 0 *before* calling this; the
-    caller is responsible for building the sat mask.  METAR -10000 sentinel
-    pixels collapse to CLIP_MIN after normalize + clamp, which is the no-data
-    convention the model learns to ignore.
+    caller is responsible for building the sat mask.  After normalize the
+    caller zeroes no-data pixels (sat NaN / METAR -10000 sentinel) to the
+    neutral mean 0 -- see trainer_step / full_image_generation -- so the
+    no-data convention the model sees is 0, not the clamp extreme.
     """
     sat_data = (
         sat_data
@@ -193,6 +194,23 @@ def trainer_step(
     sat_data = torch.where(torch.isnan(sat_data), torch.zeros_like(sat_data), sat_data)
 
     sat_data, metar_data = normalize(sat_data, metar_data, device)
+    # --- Zero no-data pixels AFTER normalize (sentinel = neutral mean 0) ----
+    # The METAR conv weights in PatchEmbed3D are trained on only the ~5e-5
+    # fraction of station pixels; at the other 99.99% of pixels the sentinel
+    # value is what they multiply into every output token. With the sentinel at
+    # the clamp extreme (-4), each token dim picks up (-4)*sum(undertrained
+    # metar weights) -- a large noisy constant contaminating the shared trunk
+    # representation and washing out satellite detail (the sat-only model has
+    # no sparse channels and so never has this problem). Setting the sentinel to
+    # 0 (the normalized mean) zeroes that contribution: undertrained sparse-
+    # channel weights inject nothing at non-station pixels, and the token keeps
+    # clean satellite signal + real station dots. Same for sat off-disk (NaN).
+    # CLIP_MIN is kept as the clamp for VALID outliers; 0 is within range so the
+    # zeroed pixels survive the clamp intact.
+    sat_data = torch.where(sat_mask, sat_data, torch.zeros_like(sat_data))
+    metar_data = torch.where(
+        metar_mask.bool(), metar_data, torch.zeros_like(metar_data)
+    )
     batch_data = torch.cat([sat_data, metar_data], dim=1)  # (B, 12, T, H, W)
 
     x_context = batch_data[:, :, : model.context_frames]
@@ -255,8 +273,8 @@ def trainer_step(
 
     # --- METAR context dropout (self-supervised spatial fill) ----------
     # Randomly hide a fraction of the valid-station METAR pixels in the
-    # conditioning context, replacing them with the no-data sentinel (CLIP_MIN,
-    # the same value the model already sees at non-station pixels). The model
+    # conditioning context, replacing them with the no-data sentinel (0, the
+    # neutral mean -- the same value the model sees at non-station pixels). The model
     # must then reconstruct those pixels in the forecast from satellite + the
     # remaining ~80% of stations, instead of just echoing the sparse input.
     # Over training this teaches spatial generalization, so at inference the
@@ -282,7 +300,7 @@ def trainer_step(
             x_context_t = x_context_t.clone()
             x_context_t[:, c_sat:] = torch.where(
                 drop_e,
-                torch.full_like(x_context_t[:, c_sat:], CLIP_MIN),
+                torch.zeros_like(x_context_t[:, c_sat:]),  # 0 = no-data sentinel
                 x_context_t[:, c_sat:],
             )
 
@@ -388,11 +406,18 @@ def full_image_generation(
     with torch.no_grad():
         sat_data = batch["sat_patch_data"].permute(0, 2, 1, 3, 4)
         metar_data = batch["metar_patch_data"].permute(0, 2, 1, 3, 4)
+        metar_mask = batch["metar_mask"].permute(0, 2, 1, 3, 4)
 
         b, c_sat, t, h, w = sat_data.shape
         b, c_metar, t, h, w = metar_data.shape
 
         nb_forecasted_frame = t - model.context_frames
+
+        # no-data mask (True where invalid), captured before fill, to blank the
+        # generated output there (sentinel is now 0, so we can't detect it from
+        # the value alone at the end).
+        sat_nodata = torch.isnan(sat_data)
+        metar_nodata = ~metar_mask.bool()
 
         # fill sat NaN before normalize
         sat_data = torch.where(
@@ -401,6 +426,12 @@ def full_image_generation(
 
         if normalize_input:
             sat_data, metar_data = normalize(sat_data, metar_data, device=device)
+            # same sentinel=0 convention as training so the sampled context
+            # matches the distribution the model was trained on.
+            sat_data = torch.where(~sat_nodata, sat_data, torch.zeros_like(sat_data))
+            metar_data = torch.where(
+                ~metar_nodata, metar_data, torch.zeros_like(metar_data)
+            )
 
         batch_data = torch.cat([sat_data, metar_data], dim=1)[0:nb_element]
 
@@ -451,8 +482,12 @@ def full_image_generation(
             x_t = denormalize_residual(x_t, c_sat, device)
             x_t = x_t + last_context.expand_as(x_t)
 
-        # keep no-data values from last context frame (sat NaN / metar sentinel)
-        x_t = torch.where(last_context == CLIP_MIN, last_context, x_t)
+        # blank no-data pixels in the output (sentinel is now 0; use the mask
+        # captured before fill, restricted to the last context frame's layout).
+        nodata_last = torch.cat([sat_nodata, metar_nodata], dim=1)[
+            0:nb_element, :, model.context_frames - 1 : model.context_frames
+        ].expand_as(x_t)
+        x_t = torch.where(nodata_last, torch.zeros_like(x_t), x_t)
 
         generated = x_t.cpu()
         target = batch_data[:, :, model.context_frames :].cpu()
