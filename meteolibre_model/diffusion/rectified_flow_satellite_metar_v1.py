@@ -228,7 +228,7 @@ def trainer_step(
     t_emp = (bin_indices.float() + torch.rand(num_emp, device=device)) * bin_size
     t_emp = t_emp[torch.randperm(num_emp, device=device)]
 
-    # progressive context blur augmentation
+    # progressive context blur augmentation (satellite channels only)
     if sigma > 0:
         # eps = torch.randn(num_emp, device=device)
         # t_emp_blur = torch.sigmoid(1.4 + 1.8 * eps).clamp(1e-4, 1 - 1e-4)
@@ -236,12 +236,20 @@ def trainer_step(
         t_emp_blur = torch.rand(num_emp, device=device)
 
         blur_sigma = t_emp_blur * sigma
-        x_context_t = apply_blur_with_sigma_batched(x_context, blur_sigma)
+        # Blur the SATELLITE context only. METAR is sparse point data on a
+        # sentinel background: blurring it would smear isolated station
+        # readings across the HxW grid, fabricating spatial structure where
+        # there is none and corrupting the station-conditioning signal. The
+        # satellite branch is the dense, spatially coherent field this
+        # augmentation is meant to robustify.
+        sat_ctx_t = apply_blur_with_sigma_batched(x_context[:, :c_sat], blur_sigma)
 
         frame_noise_rand = torch.rand(b, model.context_frames, device=device)
         noise_sigma = (blur_sigma.unsqueeze(1) / sigma * 0.05 * frame_noise_rand)
         noise_sigma = noise_sigma.view(b, 1, model.context_frames, 1, 1)
-        x_context_t = x_context_t + noise_sigma * torch.randn_like(x_context)
+        sat_ctx_t = sat_ctx_t + noise_sigma * torch.randn_like(sat_ctx_t)
+        # rebuild context: blurred+noised sat channels, untouched METAR
+        x_context_t = torch.cat([sat_ctx_t, x_context[:, c_sat:]], dim=1)
     else:
         x_context_t = x_context
 

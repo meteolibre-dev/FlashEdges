@@ -34,7 +34,8 @@ class DualJiT3D(nn.Module):
             img_size=img_size,
             patch_size=patch_size,
             in_channels=sat_in_channels + kpi_in_channels,
-            out_channels=sat_out_channels + kpi_out_channels,
+            sat_out_channels=sat_out_channels,
+            kpi_out_channels=kpi_out_channels,
             embed_dim=embed_dim,
             depth=depth,
             num_heads=num_heads,
@@ -45,10 +46,11 @@ class DualJiT3D(nn.Module):
     def forward(self, sat_input: torch.Tensor, kpi_input: torch.Tensor, context: torch.Tensor):
 
         combined_input = torch.cat([kpi_input, sat_input], dim=1)
-        pred = self.jit(combined_input, context)
-        sat_pred = pred[:, :self.sat_out_channels]
-        kpi_pred = pred[:, self.sat_out_channels:]
-        return sat_pred, kpi_pred
+        # JiT3D_Modern returns (sat_pred, kpi_pred) directly via its two split
+        # decoder heads; no channel slicing needed here. Input channel order
+        # ([kpi, sat]) is unchanged so the pretrained PatchEmbed3D conv still
+        # sees the same channel layout it was trained on.
+        return self.jit(combined_input, context)
 
 
 if __name__ == "__main__":

@@ -272,9 +272,9 @@ def main():
 
     model_path = "models/checkpoint.safetensors"
     state_dict = load_file(model_path)
-    # strict=False: the pretrained checkpoint predates log_vars, so it does not
-    # contain that key and it stays at its zeros(2) init. Checkpoints saved by
-    # this script do contain it and restore it normally on resume.
+    # strict=False: load only the keys present in the checkpoint; new params
+    # (log_vars, the split decoder heads) keep their initialization. Starting
+    # a full retrain, so the split decoder heads are initialized fresh.
     model.load_state_dict(state_dict, strict=False)
 
     model = torch.compile(model)

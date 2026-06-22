@@ -220,6 +220,8 @@ class JiT3D_Modern(nn.Module):
         patch_size=(1, 8, 8),       # temporal patch = 1 → each token = 1 frame
         in_channels=3,
         out_channels=3,
+        sat_out_channels=None,     # dual-head decoder: sat branch (else single head)
+        kpi_out_channels=None,     # dual-head decoder: kpi/metar branch (else single head)
         embed_dim=768,
         depth=12,
         num_heads=12,
@@ -266,7 +268,22 @@ class JiT3D_Modern(nn.Module):
         ])
 
         self.norm_final = RMSNorm(embed_dim)
-        self.final_layer = FinalLayer(patch_size, out_channels, embed_dim)
+        # Decoder: optionally two independent FinalLayer heads (one per
+        # branch) instead of one shared head. With a shared head, the Linear
+        # that reconstructs each 8x8 patch is optimized jointly by the sat and
+        # metar losses; METAR's optimum is near-flat 8x8 blocks (sparse point
+        # data on a sentinel background), which drags the shared basis toward
+        # blocky/low-frequency patterns that the satellite channels inherit --
+        # showing up as a visible 8x8 grid and loss of fine detail in the sat
+        # forecast. Split heads let the sat decoder be optimized only by the
+        # sat loss, breaking that coupling while the trunk (blocks + norm)
+        # stays shared.
+        self.dual_head = sat_out_channels is not None and kpi_out_channels is not None
+        if self.dual_head:
+            self.final_layer_sat = FinalLayer(patch_size, sat_out_channels, embed_dim)
+            self.final_layer_kpi = FinalLayer(patch_size, kpi_out_channels, embed_dim)
+        else:
+            self.final_layer = FinalLayer(patch_size, out_channels, embed_dim)
 
         # ── Latent context corruptor (training only) ──────────────────────────
         self.corruptor = LatentContextCorruptor(
@@ -331,6 +348,8 @@ class JiT3D_Modern(nn.Module):
                 x = self.corruptor.corrupt_block0(x, self.n_ctx_tokens)
 
         x = self.norm_final(x)
+        if self.dual_head:
+            return self.final_layer_sat(x, T, H, W), self.final_layer_kpi(x, T, H, W)
         return self.final_layer(x, T, H, W)
 
 
