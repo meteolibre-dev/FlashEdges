@@ -157,7 +157,7 @@ def trainer_step(
     interpolation="linear",
     use_residual=True,
     metar_loss_weight=1.0,
-    metar_drop_frac=0.20,
+    metar_drop_frac=0.05,
 ):
     """One flow-matching training step with x-prediction.
 

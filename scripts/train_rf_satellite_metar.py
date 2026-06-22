@@ -25,6 +25,7 @@ from torchvision.utils import make_grid
 from accelerate import Accelerator
 from accelerate.utils import set_seed, DistributedDataParallelKwargs
 from safetensors.torch import save_file
+from safetensors.torch import load_file
 from tqdm.auto import tqdm
 
 # Add project root to sys.path
@@ -150,12 +151,12 @@ def main():
     parser.add_argument(
         "--metar_drop_frac",
         type=float,
-        default=0.20,
+        default=0.05,
         help="Fraction of valid-station METAR pixels to randomly hide in the "
         "conditioning context each step (self-supervised spatial fill): the "
         "model must reconstruct them in the forecast from satellite + the "
         "remaining stations, so it learns to output a full METAR image even "
-        "where no station reported. 0 disables. Default 0.20.",
+        "where no station reported. 0 disables. Default 0.05.",
     )
     args = parser.parse_args()
 
@@ -251,6 +252,11 @@ def main():
     model_params = params["model"]
     assert params["model_type"] == "jit", "Only 'jit' model_type is supported"
     model = DualJiT3D(**model_params)
+
+    model_path = "models/checkpoint.safetensors"
+    state_dict = load_file(model_path)
+    model.load_state_dict(state_dict)
+
     model = torch.compile(model)
 
     # --- Optimizer: Muon (2D) + AdamW (rest) ---
@@ -395,10 +401,13 @@ def main():
                 unwrapped_model = accelerator.unwrap_model(model)
                 os.makedirs(MODEL_DIR, exist_ok=True)
                 save_path = f"{MODEL_DIR}flashedges_v1_epoch_{epoch + 1}.safetensors"
+                save_path_checkpoint = f"{MODEL_DIR}checkpoint.safetensors"
+
                 model_to_save = getattr(
                     unwrapped_model, "_orig_mod", unwrapped_model
                 )
                 save_file(model_to_save.state_dict(), save_path)
+                save_file(model_to_save.state_dict(), save_path_checkpoint)
                 accelerator.print(f"Model saved to {save_path}")
 
         accelerator.wait_for_everyone()
