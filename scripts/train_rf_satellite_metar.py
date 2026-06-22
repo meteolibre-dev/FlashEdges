@@ -16,6 +16,7 @@ Usage:
 import argparse
 import os
 import sys
+import math
 import random
 from datetime import datetime, timezone
 
@@ -259,9 +260,15 @@ def main():
     # the effective weight on branch i is exp(-log_vars[i]). Registered as a
     # model Parameter so it is (a) picked up by get_grouped_params / the
     # optimizer, (b) kept in sync across DDP processes by accelerator.prepare,
-    # and (c) saved/loaded with the checkpoint. Initialized at 0 so both
-    # branches start at weight 1.0 (equivalent to the old default balance).
-    model.log_vars = nn.Parameter(torch.zeros(2))  # [sat, metar]
+    # and (c) saved/loaded with the checkpoint.
+    #
+    # Init sat weight = 1.0, metar weight = 0.3 -- the manual rebalance we'd
+    # have picked by hand to stop METAR's high-variance loss from starving the
+    # satellite branch. Uncertainty weighting then adapts these from this
+    # warm-start. log_vars[i] = -log(weight_i), so sat -> 0.0, metar -> 1.204.
+    model.log_vars = nn.Parameter(
+        torch.tensor([0.0, -math.log(0.3)])
+    )  # [sat, metar] -> exp(-s) = [1.0, 0.3]
 
     model_path = "models/checkpoint.safetensors"
     state_dict = load_file(model_path)
