@@ -29,4 +29,4 @@ model_v1_global_satellite_metar:
     embed_dim: 768
     depth: 12
     num_heads: 12
-    context_dim: 6          # spatial(4) + t(1) + d(1)
+    context_dim: 6          # spatial(4) + d(1) + t(1)  -- t LAST

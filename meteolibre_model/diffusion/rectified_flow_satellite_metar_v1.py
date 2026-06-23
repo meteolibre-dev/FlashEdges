@@ -185,6 +185,13 @@ def trainer_step(
     b, c_sat, t_dim, h, w = sat_data.shape
     _, c_metar, _, _, _ = metar_data.shape
 
+    # NOTE: context_global column order is [spatial(4), d(1), t(1)] -- t LAST, because
+    # JiT3D_Modern.forward reads time_val = t[:, -1] for its sinusoidal time
+    # embedding. Previously t and d were swapped, so the time embedding always
+    # saw d (= 0) and the real timestep leaked in only as a raw scalar through
+    # the context MLP. With t last, the dedicated time path finally sees the
+    # real 1->0 schedule and the model is conditioned on it correctly.
+
     # --- sat mask: NaN where GMGSI off-disk (before normalize) ---
     sat_mask = ~torch.isnan(sat_data)
     sat_data = torch.where(torch.isnan(sat_data), torch.zeros_like(sat_data), sat_data)
@@ -312,7 +319,7 @@ def trainer_step(
     # model predicts clean target (x-prediction)
     model_input_emp = torch.cat([x_context_t, xt_emp], dim=2)
     context_global_emp = torch.cat(
-        [context_info_emp, t_emp.unsqueeze(1), torch.zeros_like(t_emp).unsqueeze(1)],
+        [context_info_emp, torch.zeros_like(t_emp).unsqueeze(1), t_emp.unsqueeze(1)],
         dim=1,
     )
 
@@ -434,8 +441,10 @@ def full_image_generation(
 
             x_context_t = x_context
             model_input = torch.cat([x_context_t, x_t], dim=2)
+            # t LAST so JiT3D_Modern's time_val = t[:, -1] picks up the real
+            # 1->0 schedule (see trainer_step for the full rationale).
             context_global = torch.cat(
-                [context_info, t_batch.unsqueeze(1), d_batch.unsqueeze(1)], dim=1
+                [context_info, d_batch.unsqueeze(1), t_batch.unsqueeze(1)], dim=1
             )
 
             sat_x_pred, metar_x_pred = model(
