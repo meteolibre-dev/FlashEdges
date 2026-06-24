@@ -16,7 +16,7 @@ model_v1_global_satellite_metar:
   gradient_clip_value: 1.0
   residual: false
   dataset_path: "."
-  metar_loss_weight: 1.0
+  metar_loss_weight: 0.
   model_type: "jit"
   model:
     sat_in_channels: 5      # GMGSI 4 + elevation 1
