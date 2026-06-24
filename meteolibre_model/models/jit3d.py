@@ -222,6 +222,9 @@ class JiT3D_Modern(nn.Module):
         out_channels=3,
         sat_out_channels=None,     # dual-head decoder: sat branch (else single head)
         kpi_out_channels=None,     # dual-head decoder: kpi/metar branch (else single head)
+        kpi_in_channels=None,      # # of metar-only channels fed directly to the
+                                   # kpi head as an additive persistence skip
+                                   # (None/0 disables the skip path)
         embed_dim=768,
         depth=12,
         num_heads=12,
@@ -285,6 +288,24 @@ class JiT3D_Modern(nn.Module):
         else:
             self.final_layer = FinalLayer(patch_size, out_channels, embed_dim)
 
+        # ── METAR-only reference skip ─────────────────────────────────────────
+        # A separate 1x1x1 Conv3d that maps the raw previous-step METAR values
+        # at the SAME spatial/temporal positions straight into the kpi head's
+        # output, bypassing the shared trunk. Sparse station observations are
+        # heavily diluted after patchify + 12 attention blocks; this gives the
+        # metar branch a dedicated high-bandwidth local-persistence path
+        # ("next value ~= last value + small correction"). The sat branch is
+        # completely untouched. Zero-initialized so the model starts exactly
+        # as the no-skip version (skip == 0) and learns the prior gradually --
+        # important for stable PEFT fine-tuning on top of a sat-only checkpoint.
+        self.use_metar_ref = (
+            self.dual_head and kpi_in_channels is not None and kpi_in_channels > 0
+        )
+        if self.use_metar_ref:
+            self.metar_ref_encoder = nn.Conv3d(
+                kpi_in_channels, kpi_out_channels, kernel_size=1
+            )
+
         # ── Latent context corruptor (training only) ──────────────────────────
         self.corruptor = LatentContextCorruptor(
             corruption_prob=corruption_prob,
@@ -293,6 +314,12 @@ class JiT3D_Modern(nn.Module):
         )
 
         self.initialize_weights()
+
+        # Re-zero the metar ref encoder AFTER initialize_weights() (which would
+        # otherwise override it with trunc_normal) so the skip starts at 0.
+        if self.use_metar_ref:
+            nn.init.zeros_(self.metar_ref_encoder.weight)
+            nn.init.zeros_(self.metar_ref_encoder.bias)
 
     def initialize_weights(self):
         self.apply(self._init_weights)
@@ -313,10 +340,13 @@ class JiT3D_Modern(nn.Module):
         emb = t[:, None] * emb[None, :]
         return torch.cat((emb.sin(), emb.cos()), dim=-1)
 
-    def forward(self, x, t):
+    def forward(self, x, t, metar_ref=None):
         """
         x : (B, C, T, H, W)   — context frames first, target frames after
         t : (B, context_dim)
+        metar_ref : optional (B, kpi_in_channels, T, H, W) — raw previous-step
+            METAR values added directly into the kpi head output. Ignored if the
+            skip path is disabled or metar_ref is None.
         """
         B, C, T, H, W = x.shape
 
@@ -349,7 +379,11 @@ class JiT3D_Modern(nn.Module):
 
         x = self.norm_final(x)
         if self.dual_head:
-            return self.final_layer_sat(x, T, H, W), self.final_layer_kpi(x, T, H, W)
+            sat_out = self.final_layer_sat(x, T, H, W)
+            kpi_out = self.final_layer_kpi(x, T, H, W)
+            if self.use_metar_ref and metar_ref is not None:
+                kpi_out = kpi_out + self.metar_ref_encoder(metar_ref)
+            return sat_out, kpi_out
         return self.final_layer(x, T, H, W)
 
 

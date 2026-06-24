@@ -327,6 +327,7 @@ def trainer_step(
         model_input_emp[:, :c_sat].float(),
         model_input_emp[:, c_sat:].float(),
         context_global_emp.float(),
+        metar_ref=model_input_emp[:, c_sat:].float(),
     )
 
     x_sat_pred_emp = sat_x_pred_emp[:, :, model.context_frames:]
@@ -451,6 +452,7 @@ def full_image_generation(
                 model_input[:, :c_sat].float(),
                 model_input[:, c_sat:].float(),
                 context_global.float(),
+                metar_ref=model_input[:, c_sat:].float(),
             )
 
             x_pred = torch.cat([sat_x_pred, metar_x_pred], dim=1)[

@@ -36,6 +36,7 @@ class DualJiT3D(nn.Module):
             in_channels=sat_in_channels + kpi_in_channels,
             sat_out_channels=sat_out_channels,
             kpi_out_channels=kpi_out_channels,
+            kpi_in_channels=kpi_in_channels,
             embed_dim=embed_dim,
             depth=depth,
             num_heads=num_heads,
@@ -43,14 +44,26 @@ class DualJiT3D(nn.Module):
             time_emb_dim=time_emb_dim,
         )
 
-    def forward(self, sat_input: torch.Tensor, kpi_input: torch.Tensor, context: torch.Tensor):
+    def forward(
+        self,
+        sat_input: torch.Tensor,
+        kpi_input: torch.Tensor,
+        context: torch.Tensor,
+        metar_ref: torch.Tensor = None,
+    ):
+        """sat_input + kpi_input go to the shared trunk as before.
 
+        ``metar_ref`` is the SAME-position previous-step METAR tensor fed
+        directly to the metar (kpi) head as an additive persistence skip
+        (see JiT3D_Modern.metar_ref_encoder). By default it is the metar
+        channels of the input itself (kpi_input); pass None to disable.
+        """
         combined_input = torch.cat([kpi_input, sat_input], dim=1)
         # JiT3D_Modern returns (sat_pred, kpi_pred) directly via its two split
         # decoder heads; no channel slicing needed here. Input channel order
         # ([kpi, sat]) is unchanged so the pretrained PatchEmbed3D conv still
         # sees the same channel layout it was trained on.
-        return self.jit(combined_input, context)
+        return self.jit(combined_input, context, metar_ref=metar_ref)
 
 
 if __name__ == "__main__":
