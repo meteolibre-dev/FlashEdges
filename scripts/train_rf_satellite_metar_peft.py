@@ -85,6 +85,10 @@ LORA_TARGET_MODULES = r".*blocks\.\d+\.(attn\.(qkv|proj)|mlp\.w[123])$"
 # and ``jit.gate_proj`` all match.
 MODULES_TO_SAVE = ["final_layer_kpi", "persist_proj", "gate_proj"]
 
+# Substrings used to detect the METAR-head parameters for the dedicated
+# higher-LR optimizer group (mirrors MODULES_TO_SAVE).
+METAR_HEAD_KEYWORDS = ("final_layer_kpi", "persist_proj", "gate_proj")
+
 
 def load_config(config_name: str):
     config_path = os.path.join(project_root, "meteolibre_model", "config", "configs.yml")
@@ -95,22 +99,36 @@ def load_config(config_name: str):
     return config[config_name]
 
 
-def get_grouped_params(model):
-    """Split trainable params into 2D (Muon-style) and others (AdamW).
+def get_grouped_params(model, metar_head_keywords=METAR_HEAD_KEYWORDS):
+    """Split trainable params into three groups.
 
-    With PEFT only adapter + modules_to_save params have requires_grad=True;
-    the frozen base is filtered out automatically.
+    1. ``metar_head_params`` — METAR-specific modules (``final_layer_kpi``,
+       ``persist_proj``, ``gate_proj``). These are full fine-tuned via PEFT's
+       ``modules_to_save`` and carry a structurally different (sparse, masked)
+       signal; they get a dedicated, typically higher LR via
+       ``--metar_head_lr_mult``.
+    2. ``muon_params`` — remaining 2D tensors (LoRA adapters on the trunk).
+       "Muon-style" group, base LR.
+    3. ``adamw_params`` — remaining non-2D tensors (1D norms/biases), base LR/3.
+
+    Frozen base params are filtered out automatically (``requires_grad=False``).
+    A param is assigned to the METAR-head group if any keyword in
+    ``metar_head_keywords`` appears in its dotted name (peft prefixing like
+    ``base_model.model.jit.final_layer_kpi.linear.weight`` is handled).
     """
     muon_params = []
     adamw_params = []
-    for _, p in model.named_parameters():
+    metar_head_params = []
+    for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        if p.ndim == 2:
+        if any(k in name for k in metar_head_keywords):
+            metar_head_params.append(p)
+        elif p.ndim == 2:
             muon_params.append(p)
         else:
             adamw_params.append(p)
-    return muon_params, adamw_params
+    return muon_params, adamw_params, metar_head_params
 
 
 class CombinedOptimizer:
@@ -171,6 +189,16 @@ def main():
     parser.add_argument("--num_workers", type=int, default=10)
     parser.add_argument("--steps_per_epoch", type=int, default=4000)
     parser.add_argument("--metar_drop_frac", type=float, default=0.05)
+    parser.add_argument(
+        "--metar_head_lr_mult",
+        type=float,
+        default=10.0,
+        help="LR multiplier for the METAR-specific head modules "
+        "(final_layer_kpi + persist_proj + gate_proj). 1.0 = same as trunk "
+        "LoRA LR. The head is full fine-tuned from a sat-only base and carries "
+        "a sparse masked signal, so it typically benefits from a higher LR "
+        "(try 5-30).",
+    )
     args = parser.parse_args()
 
     params = load_config(args.config)
@@ -289,10 +317,28 @@ def main():
     model = torch.compile(model)
 
     # --- Optimizer (only trainable params are collected) ---
-    muon_params, adamw_params = get_grouped_params(model)
+    # Three param groups: the METAR head (``modules_to_save``) gets its own LR
+    # (``learning_rate * metar_head_lr_mult``); the remaining 2D params (trunk
+    # LoRA adapters) use the base LR, and the remaining 1D params use base/3.
+    muon_params, adamw_params, metar_head_params = get_grouped_params(model)
     opt_muon = torch.optim.AdamW(muon_params, lr=learning_rate, weight_decay=0.01)
     opt_adam = torch.optim.AdamW(adamw_params, lr=learning_rate / 3, weight_decay=0.01)
-    optimizer = [opt_muon, opt_adam]
+    opt_head = torch.optim.AdamW(
+        metar_head_params,
+        lr=learning_rate * args.metar_head_lr_mult,
+        weight_decay=0.01,
+    )
+    optimizer = [opt_muon, opt_adam, opt_head]
+    if accelerator.is_main_process:
+        n_muon = sum(p.numel() for p in muon_params)
+        n_adam = sum(p.numel() for p in adamw_params)
+        n_head = sum(p.numel() for p in metar_head_params)
+        accelerator.print(
+            f"[opt] param groups — muon(2D): {n_muon:,} @ lr={learning_rate:.2e} | "
+            f"adamw(1D): {n_adam:,} @ lr={learning_rate/3:.2e} | "
+            f"metar_head: {n_head:,} @ lr={learning_rate*args.metar_head_lr_mult:.2e} "
+            f"(mult={args.metar_head_lr_mult})"
+        )
 
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
     if isinstance(optimizer, list):
