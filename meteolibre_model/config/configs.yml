@@ -8,7 +8,7 @@ model_v1_global_satellite_metar:
   model_dir: "models/"
   parametrization: "standard"
   interpolation: "linear"
-  batch_size: 32
+  batch_size: 64
   learning_rate: 0.0003
   num_epochs: 500
   seed: 42
