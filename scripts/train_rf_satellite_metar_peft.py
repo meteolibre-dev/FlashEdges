@@ -11,8 +11,8 @@ only** (``metar_loss_weight == 0``). On top of that frozen base we:
     representation can be nudged to also carry METAR signal without
     forgetting the satellite structure;
   * **full fine-tune** the METAR-specific modules — the split metar decoder
-    head (``final_layer_kpi``) and the new ``metar_ref_encoder`` (the
-    additive previous-step METAR persistence skip) — via PEFT's
+    head (``final_layer_kpi``) and the new gated persistence path
+    (``persist_proj`` + ``gate_proj``) — via PEFT's
     ``modules_to_save``;
   * turn the METAR loss **on** (``metar_loss_weight`` raised).
 
@@ -80,10 +80,10 @@ LORA_TARGET_MODULES = r".*blocks\.\d+\.(attn\.(qkv|proj)|mlp\.w[123])$"
 
 # Modules fully fine-tuned alongside the adapters (peft ``modules_to_save``).
 #   final_layer_kpi   : the split METAR decoder head
-#   metar_ref_encoder : the additive previous-step METAR persistence skip
-# These are matched by suffix too, so ``jit.final_layer_kpi`` and
-# ``jit.metar_ref_encoder`` both match.
-MODULES_TO_SAVE = ["final_layer_kpi", "metar_ref_encoder"]
+#   persist_proj / gate_proj : the gated previous-step METAR persistence path
+# These are matched by suffix too, so ``jit.final_layer_kpi``, ``jit.persist_proj``
+# and ``jit.gate_proj`` all match.
+MODULES_TO_SAVE = ["final_layer_kpi", "persist_proj", "gate_proj"]
 
 
 def load_config(config_name: str):
@@ -250,7 +250,7 @@ def main():
 
     if os.path.exists(base_checkpoint):
         state_dict = load_file(base_checkpoint)
-        # strict=False: the base may predate the dual-head / metar_ref_encoder
+        # strict=False: the base may predate the dual-head / persistence-path
         # additions; those modules keep their fresh init.
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         accelerator.print(

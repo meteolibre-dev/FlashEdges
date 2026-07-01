@@ -55,7 +55,7 @@ class DualJiT3D(nn.Module):
 
         ``metar_ref`` is the SAME-position previous-step METAR tensor fed
         directly to the metar (kpi) head as an additive persistence skip
-        (see JiT3D_Modern.metar_ref_encoder). By default it is the metar
+        (see JiT3D_Modern.persist_proj / gate_proj). By default it is the metar
         channels of the input itself (kpi_input); pass None to disable.
         """
         combined_input = torch.cat([kpi_input, sat_input], dim=1)

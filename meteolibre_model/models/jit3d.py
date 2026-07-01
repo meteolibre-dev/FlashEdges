@@ -288,21 +288,42 @@ class JiT3D_Modern(nn.Module):
         else:
             self.final_layer = FinalLayer(patch_size, out_channels, embed_dim)
 
-        # ── METAR-only reference skip ─────────────────────────────────────────
-        # A separate 1x1x1 Conv3d that maps the raw previous-step METAR values
-        # at the SAME spatial/temporal positions straight into the kpi head's
-        # output, bypassing the shared trunk. Sparse station observations are
-        # heavily diluted after patchify + 12 attention blocks; this gives the
-        # metar branch a dedicated high-bandwidth local-persistence path
-        # ("next value ~= last value + small correction"). The sat branch is
-        # completely untouched. Zero-initialized so the model starts exactly
-        # as the no-skip version (skip == 0) and learns the prior gradually --
-        # important for stable PEFT fine-tuning on top of a sat-only checkpoint.
+        # ── METAR-only persistence path (gated blend) ─────────────────────────
+        # A dedicated, trunk-bypassing path for the raw previous-step METAR
+        # values at the SAME spatial/temporal positions. Sparse station
+        # observations are heavily diluted after patchify + 12 attention
+        # blocks, so the metar branch gets its own high-bandwidth local
+        # persistence path ("next value ~= last value + correction"). The sat
+        # branch is completely untouched.
+        #
+        # Instead of a plain additive bias, we use a per-channel *gated
+        # blend* between the trunk forecast and the persistence estimate:
+        #
+        #     persistence = persist_proj(metar_ref)
+        #     gate        = sigmoid(gate_proj(metar_ref))   in [0, 1]
+        #     kpi_out     = gate * persistence + (1 - gate) * kpi_out
+        #
+        # This is strictly more expressive than addition: the gate can kill
+        # the trunk forecast where persistence should dominate (e.g. isolated
+        # stations with strong local autocorrelation), or suppress persistence
+        # where the trunk is confident. It is also tiny (two 1x1 Conv3d) and
+        # stays in ``modules_to_save`` for PEFT.
+        #
+        # Init: ``persist_proj`` keeps its default init (sensible linear map of
+        # the last frame as a starting persistence estimate). ``gate_proj`` is
+        # zero-weighted with a strongly *negative* bias so sigmoid(bias) ~ 0
+        # at start -> the head starts as the pure trunk forecast (identical to
+        # the no-skip version), and learns to route persistence in gradually.
+        # This is important for stable PEFT fine-tuning on top of a sat-only
+        # checkpoint.
         self.use_metar_ref = (
             self.dual_head and kpi_in_channels is not None and kpi_in_channels > 0
         )
         if self.use_metar_ref:
-            self.metar_ref_encoder = nn.Conv3d(
+            self.persist_proj = nn.Conv3d(
+                kpi_in_channels, kpi_out_channels, kernel_size=1
+            )
+            self.gate_proj = nn.Conv3d(
                 kpi_in_channels, kpi_out_channels, kernel_size=1
             )
 
@@ -315,11 +336,13 @@ class JiT3D_Modern(nn.Module):
 
         self.initialize_weights()
 
-        # Re-zero the metar ref encoder AFTER initialize_weights() (which would
-        # otherwise override it with trunc_normal) so the skip starts at 0.
+        # Gated-blend init applied AFTER initialize_weights() (which would
+        # otherwise override it with trunc_normal). gate_proj -> zero weights
+        # + large negative bias so the gate starts ~closed (pure trunk);
+        # persist_proj keeps its learned/default init as the persistence prior.
         if self.use_metar_ref:
-            nn.init.zeros_(self.metar_ref_encoder.weight)
-            nn.init.zeros_(self.metar_ref_encoder.bias)
+            nn.init.zeros_(self.gate_proj.weight)
+            nn.init.constant_(self.gate_proj.bias, -6.0)
 
     def initialize_weights(self):
         self.apply(self._init_weights)
@@ -382,7 +405,9 @@ class JiT3D_Modern(nn.Module):
             sat_out = self.final_layer_sat(x, T, H, W)
             kpi_out = self.final_layer_kpi(x, T, H, W)
             if self.use_metar_ref and metar_ref is not None:
-                kpi_out = kpi_out + self.metar_ref_encoder(metar_ref)
+                persistence = self.persist_proj(metar_ref)
+                gate = torch.sigmoid(self.gate_proj(metar_ref))
+                kpi_out = gate * persistence + (1.0 - gate) * kpi_out
             return sat_out, kpi_out
         return self.final_layer(x, T, H, W)
 
