@@ -23,6 +23,7 @@ import random
 import torch
 import torch.nn.functional as F
 
+from meteolibre_model.dataset.dataset_global_satellite_metar import METAR_FEATURES
 from meteolibre_model.diffusion.utils import (
     SAT_MEAN,
     SAT_STD,
@@ -42,6 +43,56 @@ CLIP_MIN = -4
 METAR_CLIP_MAX = 15.0
 SHORTCUT_M = 128  # base steps (M=128 as in the paper)
 SHORTCUT_K = 0.25  # fraction of batch for self-consistency
+
+# ── Per-channel residual targets ──────────────────────────────────────────
+# Only these slowly-varying, highly-persistent METAR surface fields are
+# regressed as a delta (target - last_context_frame). Their delta is narrow and
+# near-zero-mean, which makes flow matching easier and aligns with the gated
+# persistence head. Intermittent/nonlinear channels (precipitation dBZ, cloud
+# cover, wind u/v) keep their absolute target. Satellite channels are always
+# absolute. No residual normalization is applied: the inputs are already
+# normalized, so deltas live on the same scale.
+METAR_RESIDUAL_FEATURES = ["tmpc", "dwpc", "mslp"]
+METAR_RESIDUAL_IDX = [METAR_FEATURES.index(f) for f in METAR_RESIDUAL_FEATURES]
+
+
+def metar_residual_channel_mask(c_sat, c_metar, device):
+    """Boolean mask over the concatenated (sat, metar) channel dim marking
+    which channels use a residual (delta) target.
+
+    Returns shape ``(1, C, 1, 1, 1)`` with ``C = c_sat + c_metar``. Satellite
+    channels are always ``False``; only the configured METAR features
+    (``METAR_RESIDUAL_IDX``) are ``True``. Safe to call with ``c_metar``
+    smaller than the feature list (extra indices are skipped).
+    """
+    mask = torch.zeros(c_sat + c_metar, dtype=torch.bool, device=device)
+    for idx in METAR_RESIDUAL_IDX:
+        if idx < c_metar:
+            mask[c_sat + idx] = True
+    return mask.view(1, -1, 1, 1, 1)
+
+
+def build_residual_target(batch_data, context_frames, c_sat, c_metar, device):
+    """Return the flow-matching regression target ``x0``.
+
+    For the configured residual METAR channels, ``x0 = target - last_context``;
+    for all other channels ``x0 = target`` (absolute). No normalization is
+    applied to the residual.
+    """
+    x0 = batch_data[:, :, context_frames:]
+    last_ctx = batch_data[:, :, context_frames - 1 : context_frames]
+    delta = x0 - last_ctx
+    resid_mask = metar_residual_channel_mask(c_sat, c_metar, device)
+    return torch.where(resid_mask, delta, x0)
+
+
+def reconstruct_residual(x_t, last_context, c_sat, c_metar, device):
+    """Inverse of ``build_residual_target`` for inference: add the last
+    context frame back to the residual channels only; leave absolute channels
+    unchanged. No denormalization (residual was not normalized).
+    """
+    resid_mask = metar_residual_channel_mask(c_sat, c_metar, device)
+    return torch.where(resid_mask, x_t + last_context.expand_as(x_t), x_t)
 
 
 def normalize(sat_data, metar_data, device):
@@ -219,11 +270,12 @@ def trainer_step(
     x_context = batch_data[:, :, : model.context_frames]
 
     if use_residual:
-        x0 = (
-            batch_data[:, :, model.context_frames:]
-            - batch_data[:, :, model.context_frames - 1 : model.context_frames]
+        # Per-channel residual: only tmpc/dwpc/mslp are regressed as a delta
+        # against the last context frame; sat + precip + cloud + wind keep
+        # their absolute target. No normalization (data already normalized).
+        x0 = build_residual_target(
+            batch_data, model.context_frames, c_sat, c_metar, device
         )
-        x0 = normalize_residual(x0, c_sat, device)
     else:
         x0 = batch_data[:, :, model.context_frames:]
 
@@ -470,8 +522,10 @@ def full_image_generation(
             t_val -= d_const
 
         if use_residual:
-            x_t = denormalize_residual(x_t, c_sat, device)
-            x_t = x_t + last_context.expand_as(x_t)
+            # Reconstruct absolute values: add the last context frame back to
+            # the residual channels only (tmpc/dwpc/mslp). Other channels are
+            # already absolute. No denormalization (residual was unnormalized).
+            x_t = reconstruct_residual(x_t, last_context, c_sat, c_metar, device)
 
         # blank no-data pixels in the output (sentinel is now 0; use the mask
         # captured before fill, restricted to the last context frame's layout).
