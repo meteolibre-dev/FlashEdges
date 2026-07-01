@@ -320,15 +320,27 @@ def main():
     # Three param groups: the METAR head (``modules_to_save``) gets its own LR
     # (``learning_rate * metar_head_lr_mult``); the remaining 2D params (trunk
     # LoRA adapters) use the base LR, and the remaining 1D params use base/3.
+    # Empty groups are skipped: with PEFT, the 1D (adamw) group is often empty
+    # because all non-2D trainable params are the head modules (modules_to_save)
+    # and LoRA adapters are 2D. AdamW rejects an empty param list.
     muon_params, adamw_params, metar_head_params = get_grouped_params(model)
-    opt_muon = torch.optim.AdamW(muon_params, lr=learning_rate, weight_decay=0.01)
-    opt_adam = torch.optim.AdamW(adamw_params, lr=learning_rate / 3, weight_decay=0.01)
-    opt_head = torch.optim.AdamW(
-        metar_head_params,
-        lr=learning_rate * args.metar_head_lr_mult,
-        weight_decay=0.01,
-    )
-    optimizer = [opt_muon, opt_adam, opt_head]
+    optimizer = []
+    if muon_params:
+        optimizer.append(
+            torch.optim.AdamW(muon_params, lr=learning_rate, weight_decay=0.01)
+        )
+    if adamw_params:
+        optimizer.append(
+            torch.optim.AdamW(adamw_params, lr=learning_rate / 3, weight_decay=0.01)
+        )
+    if metar_head_params:
+        optimizer.append(
+            torch.optim.AdamW(
+                metar_head_params,
+                lr=learning_rate * args.metar_head_lr_mult,
+                weight_decay=0.01,
+            )
+        )
     if accelerator.is_main_process:
         n_muon = sum(p.numel() for p in muon_params)
         n_adam = sum(p.numel() for p in adamw_params)
