@@ -14,7 +14,7 @@ model_v1_global_satellite_metar:
   seed: 42
   sigma_noise_input: 5.0
   gradient_clip_value: 1.0
-  residual: false
+  residual: true
   dataset_path: "."
   metar_loss_weight: 0.
   model_type: "jit"
