@@ -160,6 +160,16 @@ def main():
         "remaining stations, so it learns to output a full METAR image even "
         "where no station reported. 0 disables. Default 0.05.",
     )
+    parser.add_argument(
+        "--isolate_metar_grad",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Detach the shared trunk output before the METAR head so the "
+        "metar loss cannot propagate into the core DiT blocks. The satellite "
+        "loss becomes the sole trainer of the trunk; the metar branch keeps "
+        "its dedicated head + persistence path. Use --no-isolate_metar_grad "
+        "to restore standard joint training (metar grads reach the trunk).",
+    )
     args = parser.parse_args()
 
     params = load_config(args.config)
@@ -254,6 +264,13 @@ def main():
     model_params = params["model"]
     assert params["model_type"] == "jit", "Only 'jit' model_type is supported"
     model = DualJiT3D(**model_params)
+    model.jit.isolate_metar_grad = args.isolate_metar_grad
+    if accelerator.is_main_process:
+        accelerator.print(
+            f"[model] isolate_metar_grad={args.isolate_metar_grad} "
+            "(metar loss is blocked from the shared DiT trunk; only the "
+            "metar head + persistence path receive metar gradients)"
+        )
 
     model_path = "models/checkpoint.safetensors"
     state_dict = load_file(model_path)

@@ -327,12 +327,21 @@ class JiT3D_Modern(nn.Module):
                 kpi_in_channels, kpi_out_channels, kernel_size=1
             )
 
-        # ── Latent context corruptor (training only) ──────────────────────────
+        # ── Latent context corruptor (training only) ──────────────────────
         self.corruptor = LatentContextCorruptor(
             corruption_prob=corruption_prob,
             embed_noise_scale=embed_noise_scale,
             block0_noise_scale=block0_noise_scale,
         )
+
+        # When True, the shared trunk representation is detached before
+        # entering the METAR (kpi) head. This blocks the metar loss gradient
+        # from reaching the core DiT blocks, so the trunk is trained ONLY by
+        # the (dense, reliable) satellite loss while the metar branch keeps
+        # its dedicated head + persistence path. Equivalent in spirit to a
+        # low-rank constraint on the metar->trunk gradient, but without any
+        # PEFT machinery. Defaults to False (standard joint training).
+        self.isolate_metar_grad = False
 
         self.initialize_weights()
 
@@ -403,7 +412,12 @@ class JiT3D_Modern(nn.Module):
         x = self.norm_final(x)
         if self.dual_head:
             sat_out = self.final_layer_sat(x, T, H, W)
-            kpi_out = self.final_layer_kpi(x, T, H, W)
+            # Detach the trunk output for the metar head so the metar loss
+            # cannot propagate into the shared DiT blocks. The sat branch
+            # still gets full gradients to the trunk. No-op when the flag is
+            # off (standard joint training).
+            kpi_in = x.detach() if self.isolate_metar_grad else x
+            kpi_out = self.final_layer_kpi(kpi_in, T, H, W)
             if self.use_metar_ref and metar_ref is not None:
                 persistence = self.persist_proj(metar_ref)
                 gate = torch.sigmoid(self.gate_proj(metar_ref))
