@@ -673,7 +673,7 @@ class FlashEdgesInferenceEngine:
                 sat_elev = np.concatenate([sat_frame, elev_frame], axis=0)  # (5, H, W)
                 frame = np.concatenate([sat_elev, metar_frame], axis=0)[None, ...]  # (1, 12, H, W)
                 initial_frames.append(frame)
-                sat_nodata_masks.append(~sat_valid)  # True where no-data
+                sat_nodata_masks.append((~sat_valid)[None, ...])  # (1, 4, H, W)
 
             current_context = np.stack(initial_frames, axis=2)  # (1, 12, T_ctx, H, W)
             current_context = torch.from_numpy(current_context).float().to(self.device)

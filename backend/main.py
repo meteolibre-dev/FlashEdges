@@ -69,7 +69,7 @@ def main():
     parser.add_argument(
         "--forecast_steps",
         type=int,
-        default=8,
+        default=18,
         help="Total number of forecast hours to produce (default: 8).",
     )
     parser.add_argument(
