@@ -526,7 +526,7 @@ class FlashEdgesInferenceEngine:
         """Write GeoTIFF files for one forecast timestep.
 
         Saves:
-          - One multi-band TIFF for satellite (5 channels)
+          - One multi-band TIFF for satellite (2 channels: IR/LWIR + VIS)
           - One multi-band TIFF for METAR (7 channels)
         """
         base_filename = f"forecast_{pred_date.strftime('%Y%m%d%H%M')}"
@@ -541,6 +541,10 @@ class FlashEdgesInferenceEngine:
         if metar_np.ndim == 4:
             metar_np = metar_np[:, 0, :, :]  # (C_metar, H, W)
 
+        # Keep only the IR (LWIR, idx 0) and VIS (idx 1) satellite channels.
+        # Full sat layout is [gmgsi_lwir, gmgsi_vis, gmgsi_wv, gmgsi_sw, elevation].
+        sat_np = sat_np[:2]  # (2, H, W): [gmgsi_lwir, gmgsi_vis]
+
         common_kwargs = dict(
             driver='GTiff', crs=crs, transform=geo_transform,
             compress='deflate', tiled=True, blockxsize=512, blockysize=512,
@@ -548,7 +552,7 @@ class FlashEdgesInferenceEngine:
 
         h, w = sat_np.shape[1], sat_np.shape[2]
 
-        # Satellite GeoTIFF (5 bands)
+        # Satellite GeoTIFF (2 bands: IR + VIS)
         sat_path = os.path.join(output_dir, f"{base_filename}_sat.tif")
         with rasterio.open(
             sat_path, 'w', height=h, width=w,
