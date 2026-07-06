@@ -92,8 +92,11 @@ class LatentContextCorruptor(nn.Module):
     def __init__(
         self,
         corruption_prob: float = 0.3,
-        embed_noise_scale: float = 0.10,
-        block0_noise_scale: float = 0.05,
+        # Latent context noise disabled for now (set to 0) -- on the global
+        # sat+METAR setup it did not help and added overhead. The code path
+        # stays so it can be re-enabled by passing non-zero scales.
+        embed_noise_scale: float = 0.0,
+        block0_noise_scale: float = 0.0,
     ):
         super().__init__()
         self.corruption_prob = corruption_prob
@@ -107,6 +110,9 @@ class LatentContextCorruptor(nn.Module):
         n_ctx   : number of context tokens (first n_ctx positions)
         returns : tokens with noise added on context slice for selected samples
         """
+        # True no-op when the scale is 0 (latent noise currently disabled).
+        if noise_scale == 0.0:
+            return tokens
         B = tokens.shape[0]
 
         # Per-sample binary mask: which samples get corrupted
@@ -232,9 +238,11 @@ class JiT3D_Modern(nn.Module):
         time_emb_dim=64,
         n_context_frames=4,         # how many frames are "context" at the start of x
         # --- Corruption hyperparams ---
+        # Latent context noise disabled for now (0): not useful on the global
+        # sat+METAR setup. Re-enable by passing non-zero scales.
         corruption_prob: float = 0.3,
-        embed_noise_scale: float = 0.10,
-        block0_noise_scale: float = 0.05,
+        embed_noise_scale: float = 0.0,
+        block0_noise_scale: float = 0.0,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -445,8 +453,8 @@ if __name__ == "__main__":
         num_heads=12,
         n_context_frames=T_ctx,
         corruption_prob=0.3,
-        embed_noise_scale=0.10,
-        block0_noise_scale=0.05,
+        embed_noise_scale=0.0,
+        block0_noise_scale=0.0,
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

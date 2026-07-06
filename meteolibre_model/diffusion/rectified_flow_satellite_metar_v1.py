@@ -301,27 +301,38 @@ def trainer_step(
     t_emp = (bin_indices.float() + torch.rand(num_emp, device=device)) * bin_size
     t_emp = t_emp[torch.randperm(num_emp, device=device)]
 
-    # progressive context blur augmentation (satellite channels only)
+    # On-manifold context augmentation: blur + per-sample amplitude jitter.
+    #
+    # Brought over from flashnet's rectified_flow_lightning_shortcut_xpred_blur_v2.
+    #   - Gaussian blur + multiplicative amplitude jitter mimics the kind of
+    #     degradation the model produces of itself during AR rollout (exposure
+    #     bias), so it learns to sharpen/deblur a slightly-off context.
+    #   - Pixel-space *additive* noise breaks the smooth profile and is NOT
+    #     used (the previous "mixed noise" here was removed).
+    #   - Only the SATELLITE context is augmented: METAR is sparse point data on
+    #     a sentinel background, and blurring/jittering it would smear isolated
+    #     station readings across the HxW grid, fabricating spatial structure.
+    #   - Inference uses CLEAN context; this is train-only.
     if sigma > 0:
-        # eps = torch.randn(num_emp, device=device)
-        # t_emp_blur = torch.sigmoid(1.4 + 1.8 * eps).clamp(1e-4, 1 - 1e-4)
-
-        t_emp_blur = torch.rand(num_emp, device=device)
-
-        blur_sigma = t_emp_blur * sigma
-        # Blur the SATELLITE context only. METAR is sparse point data on a
-        # sentinel background: blurring it would smear isolated station
-        # readings across the HxW grid, fabricating spatial structure where
-        # there is none and corrupting the station-conditioning signal. The
-        # satellite branch is the dense, spatially coherent field this
-        # augmentation is meant to robustify.
+        # Per-sample blur strength on a logit-normal schedule (most samples get
+        # mild blur, a long tail gets stronger blur).
+        eps = torch.randn(num_emp, device=device)
+        t_emp_blur = torch.sigmoid(1.4 + 1.8 * eps).clamp(1e-4, 1 - 1e-4)
+        blur_sigma = t_emp_blur * sigma  # (B,)
         sat_ctx_t = apply_blur_with_sigma_batched(x_context[:, :c_sat], blur_sigma)
 
-        frame_noise_rand = torch.rand(b, model.context_frames, device=device)
-        noise_sigma = (blur_sigma.unsqueeze(1) / sigma * 0.05 * frame_noise_rand)
-        noise_sigma = noise_sigma.view(b, 1, model.context_frames, 1, 1)
-        sat_ctx_t = sat_ctx_t + noise_sigma * torch.randn_like(sat_ctx_t)
-        # rebuild context: blurred+noised sat channels, untouched METAR
+        # Per-sample multiplicative amplitude jitter (+-~20% std). Broadcasts as
+        # (B, 1, 1, 1, 1) so it scales every element of a sample's context by the
+        # same factor -- preserves the spatial/temporal structure, only the
+        # overall amplitude is perturbed. Applied to only 50% of samples so the
+        # model still frequently sees clean context.
+        amplitude_jitter_std = 0.20
+        amplitude_jitter_prob = 0.5
+        jitter_mask = (torch.rand(b, device=device) < amplitude_jitter_prob).view(b, 1, 1, 1, 1)
+        scale = 1.0 + amplitude_jitter_std * torch.randn(b, 1, 1, 1, 1, device=device)
+        sat_ctx_t = sat_ctx_t * (jitter_mask * scale + ~jitter_mask)
+
+        # rebuild context: blurred+jittered sat channels, untouched METAR
         x_context_t = torch.cat([sat_ctx_t, x_context[:, c_sat:]], dim=1)
     else:
         x_context_t = x_context
