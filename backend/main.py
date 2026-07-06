@@ -81,8 +81,8 @@ def main():
     parser.add_argument(
         "--denoising_steps",
         type=int,
-        default=128,
-        help="Number of Euler denoising steps for the RF ODE (default: 128).",
+        default=32,
+        help="Number of Euler denoising steps for the RF ODE (default: 32).",
     )
     parser.add_argument(
         "--patch_size",

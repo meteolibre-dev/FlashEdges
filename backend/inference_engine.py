@@ -168,7 +168,7 @@ class FlashEdgesInferenceEngine:
         model_path: str,
         config_name: str = "model_v1_global_satellite_metar",
         patch_size: int = 128,
-        denoising_steps: int = 128,
+        denoising_steps: int = 32,
         batch_size: int = 64,
         context_frames: int = 4,
         interpolation: str = "linear",
