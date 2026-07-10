@@ -219,8 +219,10 @@ class FlashEdgesGlobalDataset(torch.utils.data.Dataset):
 
     Args:
         localrepo (str): Root of the local dataset clone. Parquet files are
-            read from ``{localrepo}/data/*.parquet`` (and ``data_v1/`` if
-            present), matching the FlashNet on-disk layout.
+            read from *every* ``{localrepo}/data*/`` subdirectory
+            (e.g. ``data/``, ``data_v1/``, ``data_2022_02/``, ...), so new
+            time-bucketed ``data_YYYY_MM`` folders are picked up
+            automatically.
         cache_size (int): Number of parquet DataFrames kept in the per-worker
             LRU cache.
         seed (int): Base seed for per-worker file shuffling. Each worker's
@@ -250,16 +252,25 @@ class FlashEdgesGlobalDataset(torch.utils.data.Dataset):
         self.nb_temporal = nb_temporal
         self.precip_to_dbz = precip_to_dbz
 
-        # Discover parquet files. Sorted for a stable base order; each worker
-        # reshuffles this list in __getitem__.
+        # Discover parquet files from *every* ``data*/`` subdirectory under
+        # the repo root (e.g. data/, data_v1/, data_2022_02/, data_2024_12/,
+        # ...). This is robust to the generator's time-bucketed folder layout:
+        # new ``data_YYYY_MM`` buckets are picked up automatically. Sorted for a
+        # stable base order; each worker reshuffles this list in __getitem__.
+        data_dirs = sorted(
+            d
+            for d in glob.glob(os.path.join(self.localrepo, "data*"))
+            if os.path.isdir(d)
+        )
         candidates = sorted(
-            glob.glob(os.path.join(self.localrepo, "data", "*.parquet"))
-            + glob.glob(os.path.join(self.localrepo, "data_v1", "*.parquet"))
+            pq_file
+            for d in data_dirs
+            for pq_file in glob.glob(os.path.join(d, "*.parquet"))
         )
         if not candidates:
             raise FileNotFoundError(
-                f"No Parquet files found under '{self.localrepo}/data' "
-                f"or '{self.localrepo}/data_v1'."
+                f"No Parquet files found under any 'data*/' subdirectory of "
+                f"'{self.localrepo}'. Found dirs: {data_dirs or '<none>'}"
             )
         self.base_file_paths = candidates
         self.file_paths = list(self.base_file_paths)
