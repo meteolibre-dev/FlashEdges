@@ -145,6 +145,16 @@ def main():
         "stream its own parquet files in parallel). Default 4.",
     )
     parser.add_argument(
+        "--cache_size",
+        type=int,
+        default=2,
+        help="Per-worker LRU cache of fully-loaded parquet DataFrames. Each "
+        "cached file holds ~4.2 MB/row in RAM, so memory scales as "
+        "num_workers * cache_size * rows_per_file -- on a RAM-limited node "
+        "keep this SMALL (1-2). Lowering this is the main lever against "
+        "host-RAM OOM kills. Default 2.",
+    )
+    parser.add_argument(
         "--steps_per_epoch",
         type=int,
         default=4000,
@@ -184,6 +194,17 @@ def main():
         kwargs_handlers=[kwargs],
     )
     device = accelerator.device
+
+    # --- Report the accelerator hardware this process landed on ---
+    if torch.cuda.is_available():
+        print(
+            f"[device] CUDA available: {torch.cuda.device_count()} GPU(s); "
+            f"this process -> {device} "
+            f"({torch.cuda.get_device_name(device)})",
+            flush=True,
+        )
+    else:
+        print(f"[device] running on CPU (device={device})", flush=True)
 
     # --- Hyperparameters ---
     LOG_EVERY_N_STEPS = params["log_every_n_steps"]
@@ -235,7 +256,7 @@ def main():
     else:
         dataset = FlashEdgesGlobalDataset(
             localrepo=dataset_path,
-            cache_size=10,
+            cache_size=args.cache_size,
             seed=seed,
             nb_temporal=7,
             precip_to_dbz=True,
