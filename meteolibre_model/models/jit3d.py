@@ -154,7 +154,9 @@ class LatentContextCorruptor(nn.Module):
 # ==============================================================================
 
 class JiTAttention(nn.Module):
-    def __init__(self, dim, num_heads, qk_norm=True):
+    def __init__(self, dim, num_heads, qk_norm=True,
+                 kv_ctx_noise=0.0, block_causal=False, prefix_attn=False,
+                 tokens_per_frame=1, n_ctx_tokens=0, seq_len=None):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
@@ -164,30 +166,144 @@ class JiTAttention(nn.Module):
         if qk_norm:
             self.q_norm = RMSNorm(self.head_dim)
             self.k_norm = RMSNorm(self.head_dim)
+        # --- AR-rollout-stability augmentation (OFF by default; backward compatible) ---
+        # kv_ctx_noise: training-only HYPERSPHERICAL noise on the K/V of the CONTEXT
+        #   token slice only (the forecast token is left untouched). Applied AFTER
+        #   qk_norm (so k lives on a hypersphere) and BEFORE RoPE. Isotropic noise
+        #   scaled relative to each token's radius, then RENORMALIZED to that exact
+        #   radius -> the vector stays on its hypersphere (direction-only jitter,
+        #   norm preserved) so attention keeps its well-conditioned geometry.
+        # block_causal: replace naive full attention with a block-causal mask
+        #   (bidirectional WITHIN a frame, causal ACROSS frames). Implemented as an
+        #   additive (N,N) SDPA mask (same pattern as prefix_attn below) so it runs
+        #   on SDPA's fused Flash/mem-efficient backend. This is functionally
+        #   identical to a flex_attention block_mask, but avoids the Triton
+        #   flex-kernel dependency that can silently degrade to the (very slow)
+        #   eager path under torch.compile on some builds.
+        self.kv_ctx_noise = float(kv_ctx_noise)
+        self.block_causal = bool(block_causal)
+        self.tokens_per_frame = max(1, int(tokens_per_frame))
+        self.n_ctx_tokens = int(n_ctx_tokens)
+        self.prefix_attn = bool(prefix_attn)
+        # Precompute the (rarely-changing) additive SDPA masks up-front when the
+        # sequence length is known, storing them as non-persistent buffers. This
+        # keeps them as STABLE tensors during torch.compile: the old lazy
+        # `if self._mask is None: build()` pattern flipped a dynamo guard on the
+        # 2nd forward and forced a (slow) recompile. When seq_len is unknown at
+        # construction (direct JiTAttention usage) they stay None and the getters
+        # below build them lazily instead.
+        bm = self._build_block_mask(seq_len) if (
+            seq_len and self.block_causal and seq_len > self.tokens_per_frame) else None
+        self.register_buffer("_block_mask", bm, persistent=False)
+        pm = self._build_prefix_mask(seq_len) if (
+            seq_len and self.prefix_attn and 0 < self.n_ctx_tokens < seq_len) else None
+        self.register_buffer("_prefix_mask", pm, persistent=False)
 
-    def forward(self, x, rope_module, T, H, W):
+    def _noise_ctx_kv(self, t, scale):
+        # t: (B, H, N, D). Add HYPERSPHERICAL (norm-preserving) noise to the leading
+        # context-token slice only (training; forecast slice untouched). `scale` is a
+        # per-BATCH-ELEMENT angular scale (radians), shape (B,), shared across all
+        # layers/heads/tokens for that element -> simulates a MIX of clean (scale~0)
+        # and degraded (scale~max) context within each batch. k lives on a hypersphere
+        # after qk_norm: isotropic noise (scaled by the per-element angle / sqrt(d))
+        # is added then renormalized to each token's exact radius -> direction-only
+        # jitter, ||.|| preserved. scale=None / eval -> no-op.
+        if scale is None or not self.training or self.n_ctx_tokens <= 0:
+            return t
+        nc = self.n_ctx_tokens
+        ctx = t[..., :nc, :]
+        r = ctx.norm(dim=-1, keepdim=True).clamp(min=1e-6)           # preserve each token's radius
+        g = torch.randn_like(ctx)
+        sb = scale.clamp(min=0.0).view(-1, 1, 1, 1)                  # (B,1,1,1) per-element angle (rad)
+        y = ctx + (sb / math.sqrt(self.head_dim)) * r * g            # isotropic jitter, magnitude ~ sb rad
+        y = y * (r / y.norm(dim=-1, keepdim=True).clamp(min=1e-6))   # renormalize -> back on the hypersphere
+        return torch.cat([y, t[..., nc:, :]], dim=2)
+
+    @staticmethod
+    def _make_additive_mask(allow, device):
+        """Boolean (N,N) allow-matrix -> fp32 additive SDPA mask (0 / -inf)."""
+        neg = torch.finfo(torch.float32).min
+        return torch.where(allow, 0.0, neg).to(device=device, dtype=torch.float32)
+
+    def _build_block_mask(self, N, device="cpu"):
+        # Frame-block-causal ADDITIVE mask (N, N) for SDPA: a query attends to
+        # every key in its OWN temporal block (frame) and all EARLIER blocks.
+        # Bidirectional within a frame, strictly causal across frames. Honours
+        # video temporal order instead of naive per-token causality (which would
+        # split a frame). Built in fp32; cast to q.dtype at the call site.
+        tpf = self.tokens_per_frame
+        qi = torch.arange(N).view(N, 1)            # (N, 1) query frame index
+        ki = torch.arange(N).view(1, N)            # (1, N) key   frame index
+        allow = (ki // tpf) <= (qi // tpf)         # (N, N) boolean block-causal
+        return self._make_additive_mask(allow, device)
+
+    def _build_prefix_mask(self, N, device="cpu"):
+        # PREFIX causal mask (additive, (N,N)): context tokens (first n_ctx) attend
+        # BIDIRECTIONALLY to all context (an encoder over the known past); the
+        # future/forecast token attends to EVERYTHING; context CANNOT attend to
+        # the (noised) future -> no target leakage into the conditioning.
+        n = self.n_ctx_tokens
+        qi = torch.arange(N).view(N, 1)
+        ki = torch.arange(N).view(1, N)
+        allow = (ki < n) | (qi >= n)               # key-in-context OR query-in-future
+        return self._make_additive_mask(allow, device)
+
+    def _get_block_mask(self, N, device):
+        # Returns the precomputed buffer (compile-safe: a stable tensor). Rebuilds
+        # only if seq_len was unknown at construction or the runtime N changed.
+        if self._block_mask is None or self._block_mask.shape[0] != N:
+            self._block_mask = self._build_block_mask(N, device)
+        return self._block_mask
+
+    def _get_prefix_mask(self, N, device):
+        if self._prefix_mask is None or self._prefix_mask.shape[0] != N:
+            self._prefix_mask = self._build_prefix_mask(N, device)
+        return self._prefix_mask
+
+    def forward(self, x, rope_module, T, H, W, ctx_noise_scale=None):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
         if self.qk_norm:
             q = self.q_norm(q)
             k = self.k_norm(k)
+        # context-only K/V noise ON THE HYPERSPHERE (training; future token untouched):
+        # applied AFTER qk_norm (k lives on a hypersphere) and BEFORE RoPE so RoPE
+        # then rotates the already-jittered directions exactly as usual. The per-batch
+        # element scale (shared across layers) simulates a mix of clean/noisy context.
+        k = self._noise_ctx_kv(k, ctx_noise_scale)
+        v = self._noise_ctx_kv(v, ctx_noise_scale)
         q, k = rope_module(q, k, T, H, W)
-        x = F.scaled_dot_product_attention(q, k, v)
+        if self.block_causal and N > self.tokens_per_frame:
+            m = self._get_block_mask(N, q.device).to(q.dtype)
+            x = F.scaled_dot_product_attention(q, k, v, attn_mask=m)
+        elif self.prefix_attn and 0 < self.n_ctx_tokens < N:
+            m = self._get_prefix_mask(N, q.device).to(q.dtype)
+            x = F.scaled_dot_product_attention(q, k, v, attn_mask=m)
+        else:
+            x = F.scaled_dot_product_attention(q, k, v)
         x = x.transpose(1, 2).reshape(B, N, C)
         return self.proj(x)
 
 class JiTBlock(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio=4.0):
+    def __init__(self, dim, num_heads, mlp_ratio=4.0,
+                 kv_ctx_noise=0.0, block_causal=False, prefix_attn=False,
+                 tokens_per_frame=1, n_ctx_tokens=0, seq_len=None):
         super().__init__()
         self.norm1 = RMSNorm(dim)
-        self.attn = JiTAttention(dim, num_heads, qk_norm=True)
+        self.attn = JiTAttention(dim, num_heads, qk_norm=True,
+                                 kv_ctx_noise=kv_ctx_noise,
+                                 block_causal=block_causal,
+                                 prefix_attn=prefix_attn,
+                                 tokens_per_frame=tokens_per_frame,
+                                 n_ctx_tokens=n_ctx_tokens,
+                                 seq_len=seq_len)
         self.norm2 = RMSNorm(dim)
         hidden_dim = int(dim * mlp_ratio)
         self.mlp = SwiGLU(dim, hidden_dim, dim)
 
-    def forward(self, x, rope_module, T, H, W):
-        x = x + self.attn(self.norm1(x), rope_module, T, H, W)
+    def forward(self, x, rope_module, T, H, W, ctx_noise_scale=None):
+        x = x + self.attn(self.norm1(x), rope_module, T, H, W, ctx_noise_scale)
         x = x + self.mlp(self.norm2(x))
         return x
 
@@ -243,11 +359,21 @@ class JiT3D_Modern(nn.Module):
         corruption_prob: float = 0.3,
         embed_noise_scale: float = 0.0,
         block0_noise_scale: float = 0.0,
+        # --- AR-rollout-stability augmentation (ported from flashnet) ---
+        # kv_ctx_noise: max hyperspherical KV-noise angle (rad) on context tokens.
+        # block_causal: bidirectional within a frame, causal across frames.
+        # prefix_attn: prefix-LLM-style causal mask over context/forecast tokens.
+        kv_ctx_noise: float = 0.3,
+        block_causal: bool = True,
+        prefix_attn: bool = False,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.patch_size = patch_size
         self.n_context_frames = n_context_frames
+        self.kv_ctx_noise = kv_ctx_noise
+        self.block_causal = block_causal
+        self.prefix_attn = prefix_attn
 
         # Spatial tokens per frame (with temporal patch_size=1)
         self.tokens_per_frame = (img_size[1] // patch_size[1]) * (img_size[2] // patch_size[2])
@@ -273,8 +399,18 @@ class JiT3D_Modern(nn.Module):
         )
 
         # Transformer Blocks
+        # Precompute total seq_len so each JiTAttention builds its (rarely-
+        # changing) additive SDPA mask ONCE at construction -> a stable tensor
+        # under torch.compile (avoids a dynamo guard flip + recompile on the
+        # 2nd forward that the old lazy build pattern triggered).
+        seq_len = self.grid_t * self.tokens_per_frame
         self.blocks = nn.ModuleList([
-            JiTBlock(embed_dim, num_heads, mlp_ratio=2.6)
+            JiTBlock(embed_dim, num_heads, mlp_ratio=2.6,
+                    kv_ctx_noise=kv_ctx_noise, block_causal=block_causal,
+                    prefix_attn=prefix_attn,
+                    tokens_per_frame=self.tokens_per_frame,
+                    n_ctx_tokens=self.n_ctx_tokens,
+                    seq_len=seq_len)
             for _ in range(depth)
         ])
 
@@ -410,8 +546,16 @@ class JiT3D_Modern(nn.Module):
         grid_h = H // self.patch_size[1]
         grid_w = W // self.patch_size[2]
 
+        # Per-batch-element context-noise scale (radians), sampled ONCE per forward
+        # and SHARED across all layers/heads/tokens of each element -> a mix of
+        # clean (scale~0) and degraded (scale~max) context per batch. kv_ctx_noise
+        # is the max; each element draws U(0, max). None in eval / when disabled.
+        ctx_scale = None
+        if self.training and self.kv_ctx_noise > 0:
+            ctx_scale = torch.rand(B, device=x.device) * self.kv_ctx_noise
+
         for i, block in enumerate(self.blocks):
-            x = block(x, self.rope, grid_t, grid_h, grid_w)
+            x = block(x, self.rope, grid_t, grid_h, grid_w, ctx_scale)
 
             # ── Corruption stage 2: after block 0 ────────────────────────────
             if self.training and i == 0:

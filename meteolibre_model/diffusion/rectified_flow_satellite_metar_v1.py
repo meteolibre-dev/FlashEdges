@@ -146,6 +146,65 @@ def denormalize_residual(x0, c_sat, device):
     return x0 * std + mean
 
 
+def structured_gaussian_noise(shape, device, dtype=torch.float32, rho=0.90, generator=None):
+    """Structured Gaussian noise with shared and independent components.
+
+    .. math::
+        \\epsilon_{c,t} = \\sqrt{\\rho}\\, \\epsilon_{\\text{shared}}
+                       + \\sqrt{1-\\rho}\\, \\epsilon_{c,t}^{\\text{indep}}
+
+    The shared component is a single 2D Gaussian field per batch element with
+    shape ``(B, 1, 1, H, W)``, correlated across **all** channels and temporal
+    frames.  The independent component is fully i.i.d. per channel and per
+    timestep ``(B, C, T, H, W)``.
+
+    This makes the linear-flow noise endpoint (in part) *shared* between all
+    channel/time components for a given batch element: the model's channel
+    projection can no longer fully suppress the source by averaging independent
+    channel-noise, while still retaining some band-specific stochastic
+    structure.  Brought over from flashnet's
+    ``rectified_flow_lightning_shortcut_xpred_blur_v2.py`` (partially-shared
+    construction per Theiss et al. 2024, arXiv 2412.03756).
+
+    Args:
+        shape: ``(B, C, T, H, W)``.
+        rho: correlation strength in [0, 1].
+            * rho=1.0 -> fully shared (rank-one, identical across C and T).
+            * rho=0.0 -> fully independent (standard ``torch.randn``).
+            * rho=0.90 (default) -> 90 % shared, 10 % independent.
+        generator: optional ``torch.Generator`` for reproducibility.
+    """
+    if len(shape) != 5:
+        raise ValueError(f"Expected a 5D (B, C, T, H, W) shape, got {shape}")
+    batch, channels, temporal, height, width = shape
+
+    if rho >= 1.0:
+        shared = torch.randn(
+            batch, 1, 1, height, width,
+            device=device, dtype=dtype, generator=generator,
+        )
+        return shared.expand(batch, channels, temporal, height, width)
+    elif rho <= 0.0:
+        return torch.randn(
+            batch, channels, temporal, height, width,
+            device=device, dtype=dtype, generator=generator,
+        )
+    else:
+        sqrt_rho = math.sqrt(rho)
+        sqrt_omr = math.sqrt(1.0 - rho)
+        shared = torch.randn(
+            batch, 1, 1, height, width,
+            device=device, dtype=dtype, generator=generator,
+        )
+        independent = torch.randn(
+            batch, channels, temporal, height, width,
+            device=device, dtype=dtype, generator=generator,
+        )
+        return sqrt_rho * shared.expand(
+            batch, channels, temporal, height, width
+        ) + sqrt_omr * independent
+
+
 def get_x_t_rf(x0, x1, t, interpolation="linear"):
     """Interpolated point x_t.
     - 'linear':     x_t = (1 - t) * x0 + t * x1
@@ -210,6 +269,7 @@ def trainer_step(
     use_residual=True,
     metar_loss_weight=0.05,
     metar_drop_frac=0.05,
+    noise_rho=0.90,
 ):
     """One flow-matching training step with x-prediction.
 
@@ -280,7 +340,12 @@ def trainer_step(
         x0 = batch_data[:, :, model.context_frames:]
 
     context_info = batch["spatial_position"]
-    x1 = torch.randn_like(x0)
+    # Structured Gaussian noise endpoint: a single 2D field per batch element,
+    # (in part) shared across ALL channels and forecast frames
+    # (sqrt(rho)*shared + sqrt(1-rho)*independent). rho=0 recovers plain
+    # torch.randn_like; rho=1 is fully rank-one. Stops the model's channel
+    # projection from averaging away the source noise.
+    x1 = structured_gaussian_noise(x0.shape, x0.device, x0.dtype, rho=noise_rho)
 
     # ====================== EMPIRICAL (flow-matching) PART ======================
     num_emp = b
@@ -451,6 +516,7 @@ def full_image_generation(
     nb_element=1,
     normalize_input=True,
     use_residual=True,
+    noise_rho=0.90,
 ):
     """Generate forecast frames via Euler integration of the RF ODE."""
     model.eval()
@@ -492,9 +558,14 @@ def full_image_generation(
         context_info = batch["spatial_position"].to(device)[0:nb_element]
 
         batch_size, nb_channel, nb_context, h, w = x_context.shape
-        x_t = torch.randn(
-            batch_size, nb_channel, nb_forecasted_frame, h, w, device=device
-        )
+        # Match training: structured Gaussian prior with partially shared noise
+        # across channels and forecast frames (sqrt(rho)*shared +
+        # sqrt(1-rho)*independent). Clone so the Euler loop can mutate x_t.
+        x_t = structured_gaussian_noise(
+            (batch_size, nb_channel, nb_forecasted_frame, h, w),
+            device=device,
+            rho=noise_rho,
+        ).clone()
 
         d_const = 1.0 / steps
         t_val = 1.0
