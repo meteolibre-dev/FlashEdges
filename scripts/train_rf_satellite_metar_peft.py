@@ -16,7 +16,7 @@ only** (``metar_loss_weight == 0``). On top of that frozen base we:
     ``modules_to_save``;
   * turn the METAR loss **on** (``metar_loss_weight`` raised).
 
-Everything else (patch embed, context MLP, sat head, RoPE, norms, corruptor)
+Everything else (patch embed, context MLP, sat head, RoPE, norms)
 stays frozen. The satellite branch therefore keeps its hard-won fine detail,
 while the metar branch gets dedicated trainable capacity + a direct
 same-position persistence path.

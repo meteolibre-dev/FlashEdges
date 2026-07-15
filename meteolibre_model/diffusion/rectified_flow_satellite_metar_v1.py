@@ -146,7 +146,7 @@ def denormalize_residual(x0, c_sat, device):
     return x0 * std + mean
 
 
-def structured_gaussian_noise(shape, device, dtype=torch.float32, rho=0.90, generator=None):
+def structured_gaussian_noise(shape, device, dtype=torch.float32, rho=0.5, generator=None):
     """Structured Gaussian noise with shared and independent components.
 
     .. math::
@@ -171,7 +171,7 @@ def structured_gaussian_noise(shape, device, dtype=torch.float32, rho=0.90, gene
         rho: correlation strength in [0, 1].
             * rho=1.0 -> fully shared (rank-one, identical across C and T).
             * rho=0.0 -> fully independent (standard ``torch.randn``).
-            * rho=0.90 (default) -> 90 % shared, 10 % independent.
+            * rho=0.5 (default) -> 50 % shared, 50 % independent.
         generator: optional ``torch.Generator`` for reproducibility.
     """
     if len(shape) != 5:
@@ -269,7 +269,7 @@ def trainer_step(
     use_residual=True,
     metar_loss_weight=0.05,
     metar_drop_frac=0.05,
-    noise_rho=0.90,
+    noise_rho=0.5,
 ):
     """One flow-matching training step with x-prediction.
 
@@ -516,7 +516,7 @@ def full_image_generation(
     nb_element=1,
     normalize_input=True,
     use_residual=True,
-    noise_rho=0.90,
+    noise_rho=0.5,
 ):
     """Generate forecast frames via Euler integration of the RF ODE."""
     model.eval()

@@ -60,6 +60,7 @@ from meteolibre_model.diffusion.rectified_flow_satellite_metar_v1 import (
     normalize,
     denormalize,
     CLIP_MIN,
+    structured_gaussian_noise,
 )
 from safetensors.torch import load_file
 
@@ -173,6 +174,7 @@ class FlashEdgesInferenceEngine:
         context_frames: int = 4,
         interpolation: str = "linear",
         use_residual: bool = False,
+        noise_rho: float = 0.5,
         device: Optional[str] = None,
     ):
         """
@@ -186,6 +188,9 @@ class FlashEdgesInferenceEngine:
             context_frames: Number of past frames fed as context (default 4).
             interpolation: 'linear' or 'polynomial' RF schedule.
             use_residual: Whether the model was trained with residual targets.
+            noise_rho: Structured-noise sharing strength in [0,1] for the
+                linear-flow prior (0.5 = half shared across channels/frames,
+                0 = fully independent, 1 = fully rank-one).
             device: 'cuda' or 'cpu' (auto-detected if None).
         """
         self.model_path = model_path
@@ -196,6 +201,7 @@ class FlashEdgesInferenceEngine:
         self.context_frames = context_frames
         self.interpolation = interpolation
         self.use_residual = use_residual
+        self.noise_rho = noise_rho
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -331,7 +337,6 @@ class FlashEdgesInferenceEngine:
         # No CRS conversion needed.
         geo_transform = [0.1, 0.0, -180.0, 0.0, -0.1, 90.0]
 
-        x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=self.device)
         current_context = initial_context
 
         current_step = 0
@@ -350,7 +355,13 @@ class FlashEdgesInferenceEngine:
             # Generate this_nb forecast frames at once. We run the full
             # denoising loop on the nb_forecast-shaped noise, but only keep
             # this_nb frames at the end.
-            x_t = torch.randn(1, C, nb_forecast, H_big, W_big, device=self.device)
+            # Structured Gaussian prior: (in part) shared across all channels and
+            # forecast frames for each batch element (sqrt(rho)*shared +
+            # sqrt(1-rho)*independent). Matches the training noise endpoint.
+            x_t = structured_gaussian_noise(
+                (1, C, nb_forecast, H_big, W_big),
+                device=self.device, rho=self.noise_rho,
+            )
 
             for i in tqdm(range(self.denoising_steps), desc="Denoising"):
                 if torch.cuda.is_available():

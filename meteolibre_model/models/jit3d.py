@@ -71,86 +71,7 @@ class RoPE3D(nn.Module):
         return torch.cat([q_t, q_h, q_w], dim=-1), torch.cat([k_t, k_h, k_w], dim=-1)
 
 # ==============================================================================
-# == 3. Latent Context Corruption
-# ==============================================================================
-
-class LatentContextCorruptor(nn.Module):
-    """
-    Injects noise on context tokens only, at two points:
-      - Stage 'embed': right after patch_embed, before any block
-      - Stage 'block0': after block 0 output, before block 1
-
-    Normalization strategy: normalize the context slice to zero-mean / unit-std
-    per sample BEFORE adding noise, then re-scale back. This prevents the model
-    from learning to output large latent magnitudes to drown out the noise.
-
-    Args:
-        corruption_prob (float): probability of applying corruption to a sample.
-        embed_noise_scale (float): noise std at embed stage (relative to unit-norm latent).
-        block0_noise_scale (float): noise std at block0 stage (relative to unit-norm latent).
-    """
-    def __init__(
-        self,
-        corruption_prob: float = 0.3,
-        # Latent context noise disabled for now (set to 0) -- on the global
-        # sat+METAR setup it did not help and added overhead. The code path
-        # stays so it can be re-enabled by passing non-zero scales.
-        embed_noise_scale: float = 0.0,
-        block0_noise_scale: float = 0.0,
-    ):
-        super().__init__()
-        self.corruption_prob = corruption_prob
-        self.embed_noise_scale = embed_noise_scale
-        self.block0_noise_scale = block0_noise_scale
-
-    @torch.compiler.disable
-    def _corrupt(self, tokens: torch.Tensor, n_ctx: int, noise_scale: float) -> torch.Tensor:
-        """
-        tokens  : (B, N_total, D)  — full sequence (ctx + target)
-        n_ctx   : number of context tokens (first n_ctx positions)
-        returns : tokens with noise added on context slice for selected samples
-        """
-        # True no-op when the scale is 0 (latent noise currently disabled).
-        if noise_scale == 0.0:
-            return tokens
-        B = tokens.shape[0]
-
-        # Per-sample binary mask: which samples get corrupted
-        mask = torch.rand(B, device=tokens.device) < self.corruption_prob
-        if not mask.any():
-            return tokens
-
-        ctx = tokens[mask, :n_ctx, :]          # (B', n_ctx, D)
-
-        # --- Normalize context slice ---
-        # Per-sample mean and std over (n_ctx, D) so the noise scale is meaningful
-        # regardless of how large the latent values are at this stage
-        mean = ctx.mean(dim=(1, 2), keepdim=True)          # (B', 1, 1)
-        std  = ctx.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)  # (B', 1, 1)
-        ctx_norm = (ctx - mean) / std
-
-        # --- Add noise in normalized space ---
-        noise = torch.randn_like(ctx_norm) * noise_scale
-        ctx_corrupted_norm = ctx_norm + noise
-
-        # --- Re-scale back to original distribution ---
-        ctx_corrupted = ctx_corrupted_norm * std + mean
-
-        # Write back only the context slice of masked samples
-        out = tokens.clone()
-        out[mask, :n_ctx, :] = ctx_corrupted
-        return out
-
-    def corrupt_embed(self, tokens: torch.Tensor, n_ctx: int) -> torch.Tensor:
-        """Call after patch_embed, before block 0."""
-        return self._corrupt(tokens, n_ctx, self.embed_noise_scale)
-
-    def corrupt_block0(self, tokens: torch.Tensor, n_ctx: int) -> torch.Tensor:
-        """Call after block 0 output, before block 1."""
-        return self._corrupt(tokens, n_ctx, self.block0_noise_scale)
-
-# ==============================================================================
-# == 4. Custom Transformer Block
+# == 3. Custom Transformer Block
 # ==============================================================================
 
 class JiTAttention(nn.Module):
@@ -308,7 +229,7 @@ class JiTBlock(nn.Module):
         return x
 
 # ==============================================================================
-# == 5. The Full JiT-3D Model
+# == 4. The Full JiT-3D Model
 # ==============================================================================
 
 class PatchEmbed3D(nn.Module):
@@ -353,12 +274,6 @@ class JiT3D_Modern(nn.Module):
         context_dim=128,
         time_emb_dim=64,
         n_context_frames=4,         # how many frames are "context" at the start of x
-        # --- Corruption hyperparams ---
-        # Latent context noise disabled for now (0): not useful on the global
-        # sat+METAR setup. Re-enable by passing non-zero scales.
-        corruption_prob: float = 0.3,
-        embed_noise_scale: float = 0.0,
-        block0_noise_scale: float = 0.0,
         # --- AR-rollout-stability augmentation (ported from flashnet) ---
         # kv_ctx_noise: max hyperspherical KV-noise angle (rad) on context tokens.
         # block_causal: bidirectional within a frame, causal across frames.
@@ -471,13 +386,6 @@ class JiT3D_Modern(nn.Module):
                 kpi_in_channels, kpi_out_channels, kernel_size=1
             )
 
-        # ── Latent context corruptor (training only) ──────────────────────
-        self.corruptor = LatentContextCorruptor(
-            corruption_prob=corruption_prob,
-            embed_noise_scale=embed_noise_scale,
-            block0_noise_scale=block0_noise_scale,
-        )
-
         # When True, the shared trunk representation is detached before
         # entering the METAR (kpi) head. This blocks the metar loss gradient
         # from reaching the core DiT blocks, so the trunk is trained ONLY by
@@ -536,11 +444,6 @@ class JiT3D_Modern(nn.Module):
         x = self.patch_embed(x)  # (B, N_total, D)
         x = x + c_emb
 
-        # ── Corruption stage 1: embed ─────────────────────────────────────────
-        # Only active during training; n_ctx_tokens isolates context frames
-        if self.training:
-            x = self.corruptor.corrupt_embed(x, self.n_ctx_tokens)
-
         # 3. Transformer loop
         grid_t = T // self.patch_size[0]
         grid_h = H // self.patch_size[1]
@@ -556,10 +459,6 @@ class JiT3D_Modern(nn.Module):
 
         for i, block in enumerate(self.blocks):
             x = block(x, self.rope, grid_t, grid_h, grid_w, ctx_scale)
-
-            # ── Corruption stage 2: after block 0 ────────────────────────────
-            if self.training and i == 0:
-                x = self.corruptor.corrupt_block0(x, self.n_ctx_tokens)
 
         x = self.norm_final(x)
         if self.dual_head:
@@ -596,16 +495,13 @@ if __name__ == "__main__":
         depth=12,
         num_heads=12,
         n_context_frames=T_ctx,
-        corruption_prob=0.3,
-        embed_noise_scale=0.0,
-        block0_noise_scale=0.0,
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total Trainable Parameters: {total_params:,}")
     print(f"Model Size (approx): {total_params * 4 / 1024**2:.2f} MB (FP32)")
 
-    # --- Training mode: corruption active ---
+    # --- Training mode: KV-noise active ---
     model.train()
     x = torch.randn(4, 3, T, H, W).to(device)
     t = torch.randn(4, 128).to(device)
@@ -614,7 +510,7 @@ if __name__ == "__main__":
     out.sum().backward()
     print("[train] Backward pass successful.")
 
-    # --- Eval mode: corruption disabled ---
+    # --- Eval mode: KV-noise disabled ---
     model.eval()
     with torch.no_grad():
         out_eval = model(x, t)
