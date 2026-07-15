@@ -111,8 +111,13 @@ def main():
     )
     parser.add_argument(
         "--use_residual",
-        action="store_true",
-        help="Enable residual targets (if the model was trained that way).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Enable per-channel residual reconstruction (default: on). "
+            "Only METAR tmpc/dwpc/mslp are last_context+delta; "
+            "sat/precip/cloud/wind stay absolute. Pass --no-use-residual to disable."
+        ),
     )
     parser.add_argument(
         "--device",

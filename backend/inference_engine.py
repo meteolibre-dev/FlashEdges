@@ -7,7 +7,9 @@ FlashEdges model:
   - Dual branches: satellite (GMGSI 4 + elevation 1 = 5ch) + METAR (7ch)
     instead of satellite + lightning + radar.
   - 1-hour temporal cadence (GMGSI is hourly, not 10-min like MTG FCI).
-  - No residual targets (config ``residual: false``).
+  - Per-channel residual targets matching training (config ``residual: true``):
+    only METAR tmpc/dwpc/mslp are reconstructed as last_context + delta;
+    sat + precip/cloud/wind stay absolute.
   - METAR is sparse: NaN where no station, sentinel -10000 -> 0 after
     normalize.  The valid-station mask is preserved to blank non-station
     pixels in the output.
@@ -61,6 +63,7 @@ from meteolibre_model.diffusion.rectified_flow_satellite_metar_v1 import (
     denormalize,
     CLIP_MIN,
     structured_gaussian_noise,
+    reconstruct_residual,
 )
 from safetensors.torch import load_file
 
@@ -173,7 +176,7 @@ class FlashEdgesInferenceEngine:
         batch_size: int = 64,
         context_frames: int = 4,
         interpolation: str = "linear",
-        use_residual: bool = False,
+        use_residual: bool = True,
         noise_rho: float = 0.5,
         device: Optional[str] = None,
     ):
@@ -187,7 +190,10 @@ class FlashEdgesInferenceEngine:
             batch_size: Number of patches processed per model forward pass.
             context_frames: Number of past frames fed as context (default 4).
             interpolation: 'linear' or 'polynomial' RF schedule.
-            use_residual: Whether the model was trained with residual targets.
+            use_residual: Whether the model was trained with residual targets
+                (default True, matching configs.yml residual: true). When on,
+                only METAR residual channels (tmpc/dwpc/mslp) are reconstructed
+                as last_context + delta; sat and other METAR stay absolute.
             noise_rho: Structured-noise sharing strength in [0,1] for the
                 linear-flow prior (0.5 = half shared across channels/frames,
                 0 = fully independent, 1 = fully rank-one).
@@ -493,8 +499,12 @@ class FlashEdgesInferenceEngine:
             x_t = x_t[:, :, :this_nb, :, :]
 
             if self.use_residual:
+                # Match training: residual ONLY on METAR tmpc/dwpc/mslp.
+                # Naive x_t + last_ctx on all channels would corrupt absolute
+                # fields (sat, precip, cloud, wind) and create AR jumps on the
+                # residual channels when reconstruction was previously skipped.
                 last_ctx = current_context[:, :, -1:, :, :]
-                x_t = x_t + last_ctx.expand_as(x_t)
+                x_t = reconstruct_residual(x_t, last_ctx, c_sat, c_metar, self.device)
 
             # Denormalize to physical units
             sat_frame = x_t[:, :c_sat, :, :, :]
