@@ -293,13 +293,15 @@ def main():
             "metar head + persistence path receive metar gradients)"
         )
 
-    model_path = "models/checkpoint.safetensors"
-    state_dict = load_file(model_path)
+    #model_path = "models/checkpoint.safetensors"
+    #state_dict = load_file(model_path)
     # strict=False: load only the keys present in the checkpoint; the split
     # decoder heads keep their fresh initialization. Starting a full retrain.
-    model.load_state_dict(state_dict, strict=False)
-
+    #model.load_state_dict(state_dict, strict=False)
+    
+    print("start compiling")
     model = torch.compile(model)
+    print("end compiling")
 
     # --- Optimizer: Muon (2D) + AdamW (rest) ---
     muon_params, adamw_params = get_grouped_params(model)

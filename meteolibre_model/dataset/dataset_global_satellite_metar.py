@@ -276,6 +276,8 @@ class FlashEdgesGlobalDataset(torch.utils.data.Dataset):
         self.file_paths = list(self.base_file_paths)
 
         self.cache: "OrderedDict[int, pd.DataFrame]" = OrderedDict()
+        
+        print("number of files: ", len(self.file_paths))
 
         # Record counts per file -> cumulative offsets for bisect lookup.
         self.records_per_file_list = [
@@ -283,6 +285,9 @@ class FlashEdgesGlobalDataset(torch.utils.data.Dataset):
             for fp in self.base_file_paths
         ]
         self.total_records = sum(self.records_per_file_list)
+
+        print("total raws for training: ", self.total_records)
+
         if self.total_records == 0:
             raise ValueError(
                 f"Parquet files under '{self.localrepo}' contain 0 rows."
