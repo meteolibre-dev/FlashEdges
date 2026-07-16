@@ -287,8 +287,9 @@ def main():
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=False,  # streaming shuffles via buffer; map-style relies on
-                        # per-worker file shuffling in __getitem__
+        shuffle=False,  # streaming shuffles via buffer; map-style file order
+                        # is shuffled once in Dataset.__init__ (shared across
+                        # workers) and read sequentially for parquet locality.
         num_workers=args.num_workers,
         pin_memory=True,
         persistent_workers=use_persistent,
