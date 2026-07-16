@@ -270,6 +270,7 @@ def trainer_step(
     metar_loss_weight=0.05,
     metar_drop_frac=0.05,
     noise_rho=0.5,
+    temporal_weight_scale=1.0,
 ):
     """One flow-matching training step with x-prediction.
 
@@ -280,6 +281,15 @@ def trainer_step(
     the per-channel balance inside each branch is handled automatically by the
     s_j weights. The low metar weight keeps METAR's high-variance point-obs
     loss from starving the satellite branch of gradient.
+
+    ``temporal_weight_scale`` (default 1.0) applies a linearly increasing
+    per-forecast-frame weight so the model trains harder on frames farther in
+    the future, which improves autoregressive-rollout stability (errors
+    compound over the rollout, so weighting later target frames more heavily
+    teaches the model to keep them sharp). The ramp is normalized to mean 1
+    so the overall loss magnitude is preserved; 0 disables it (uniform per-
+    frame weighting), 1.0 = full linear ramp. Ported from flashnet's
+    rectified_flow_lightning_shortcut_xpred_blur_v2.
 
     Returns (total_loss, loss_sat, loss_metar, components) where ``components``
     is a dict of detached per-channel masked-MSE tensors
@@ -464,6 +474,21 @@ def trainer_step(
     # loss weighting (1/t^2 upweighting of small t, clamped)
     weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2
     weight = weight.clamp(0.9, 10.0)
+
+    # --- Temporal weighting: upweight later forecast frames -----------------
+    # Teaches the model to train harder on frames farther in the future
+    # (frame 0 -> lowest ramp, frame N -> highest), which improves
+    # autoregressive-rollout stability: AR errors compound over the rollout,
+    # so weighting later target frames more heavily keeps them sharp.  The
+    # ramp is mean-normalized so the overall loss magnitude is preserved;
+    # temporal_weight_scale=0 disables it (uniform), 1.0 = full linear ramp.
+    # Ported from flashnet's rectified_flow_lightning_shortcut_xpred_blur_v2.
+    n_forecast = x0_emp.shape[2]
+    if temporal_weight_scale > 0 and n_forecast > 1:
+        ramp = torch.arange(1, n_forecast + 1, device=device, dtype=weight.dtype)
+        ramp = ramp / ramp.mean()                     # mean == 1
+        blend = (1.0 - temporal_weight_scale) + temporal_weight_scale * ramp
+        weight = weight * blend.view(1, 1, n_forecast, 1, 1)
 
     # --- FastNet-style per-channel loss weights (s_j = 1 / Var[Delta_x_j]) ---
     # Weighting each output channel by the inverse variance of its

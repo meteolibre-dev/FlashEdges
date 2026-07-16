@@ -171,6 +171,15 @@ def main():
         "where no station reported. 0 disables. Default 0.05.",
     )
     parser.add_argument(
+        "--temporal_weight_scale",
+        type=float,
+        default=None,
+        help="Linearly upweight later forecast frames in the loss to improve "
+        "autoregressive-rollout stability (ramp normalized to mean 1). 0 "
+        "disables (uniform per-frame weighting), 1.0 = full linear ramp. "
+        "Defaults to the config value or 1.0.",
+    )
+    parser.add_argument(
         "--isolate_metar_grad",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -220,6 +229,11 @@ def main():
     sigma_noise_input = params.get("sigma_noise_input", 0.0)
     gradient_clip_value = params["gradient_clip_value"]
     metar_loss_weight = params.get("metar_loss_weight", 0.05)
+    temporal_weight_scale = (
+        args.temporal_weight_scale
+        if args.temporal_weight_scale is not None
+        else params.get("temporal_weight_scale", 1.0)
+    )
     dataset_path = args.dataset_path or params["dataset_path"]
 
     id_run = str(datetime.now(timezone.utc))[:19]
@@ -347,7 +361,9 @@ def main():
                     sigma=sigma_noise_input,
                     use_residual=residual,
                     metar_drop_frac=args.metar_drop_frac,
-                    metar_loss_weight=metar_loss_weight,                )
+                    metar_loss_weight=metar_loss_weight,
+                    temporal_weight_scale=temporal_weight_scale,
+                )
 
                 accelerator.backward(loss)
                 accelerator.clip_grad_norm_(model.parameters(), gradient_clip_value)

@@ -190,6 +190,15 @@ def main():
     parser.add_argument("--steps_per_epoch", type=int, default=4000)
     parser.add_argument("--metar_drop_frac", type=float, default=0.05)
     parser.add_argument(
+        "--temporal_weight_scale",
+        type=float,
+        default=1.0,
+        help="Linearly upweight later forecast frames in the loss to improve "
+        "autoregressive-rollout stability (ramp normalized to mean 1). "
+        "0 disables (uniform per-frame weighting), 1.0 = full linear ramp. "
+        "Default 1.0.",
+    )
+    parser.add_argument(
         "--metar_head_lr_mult",
         type=float,
         default=10.0,
@@ -382,6 +391,7 @@ def main():
                     use_residual=residual,
                     metar_drop_frac=args.metar_drop_frac,
                     metar_loss_weight=args.metar_loss_weight,
+                    temporal_weight_scale=args.temporal_weight_scale,
                 )
 
                 accelerator.backward(loss)
