@@ -308,11 +308,17 @@ def main():
             "metar head + persistence path receive metar gradients)"
         )
 
-    #model_path = "models/checkpoint.safetensors"
-    #state_dict = load_file(model_path)
-    # strict=False: load only the keys present in the checkpoint; the split
-    # decoder heads keep their fresh initialization. Starting a full retrain.
-    #model.load_state_dict(state_dict, strict=False)
+    # Resume from the latest checkpoint if one exists (e.g. when this script
+    # is relaunched by submit_chain.sh after a previous run's --time limit).
+    # strict=False: load only the keys present in the checkpoint; any new heads
+    # keep their fresh initialization. Runs before torch.compile on purpose.
+    model_path = f"{MODEL_DIR}checkpoint.safetensors"
+    if os.path.exists(model_path):
+        state_dict = load_file(model_path)
+        model.load_state_dict(state_dict, strict=False)
+        print(f"[resume] loaded weights from {model_path}", flush=True)
+    else:
+        print(f"[resume] no checkpoint at {model_path}; starting fresh", flush=True)
     
     print("start compiling")
     model = torch.compile(model)
