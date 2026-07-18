@@ -110,6 +110,35 @@ def main():
         help="RF interpolation schedule (default: linear).",
     )
     parser.add_argument(
+        "--sampler",
+        type=str,
+        default="sde",
+        choices=["sde", "ode"],
+        help=(
+            "Denoising integrator: marginal-preserving SDE (default) or "
+            "probability-flow ODE. SDE only applies to interpolation=linear."
+        ),
+    )
+    parser.add_argument(
+        "--sde_eps",
+        type=float,
+        default=0.1,
+        help="Global SDE noise scale eps_0 (0.0 recovers the ODE; sweep ~0.05-0.5).",
+    )
+    parser.add_argument(
+        "--sde_eps_schedule",
+        type=str,
+        default="t2",
+        choices=["const", "t", "t2"],
+        help="eps(t) profile: const | t | t^2 (default t2; vanishes at the data end).",
+    )
+    parser.add_argument(
+        "--inference_seed",
+        type=int,
+        default=None,
+        help="Optional seed for reproducible sampling noise (prior + SDE innovations).",
+    )
+    parser.add_argument(
         "--use_residual",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -137,6 +166,10 @@ def main():
         context_frames=args.context_frames,
         interpolation=args.interpolation,
         use_residual=args.use_residual,
+        sampler=args.sampler,
+        sde_eps=args.sde_eps,
+        sde_eps_schedule=args.sde_eps_schedule,
+        inference_seed=args.inference_seed,
         device=args.device,
     )
 

@@ -28,6 +28,7 @@ Output: GeoTIFF forecast files per timestep, optionally converted to COG.
 
 import os
 import sys
+import math
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -178,6 +179,10 @@ class FlashEdgesInferenceEngine:
         interpolation: str = "linear",
         use_residual: bool = True,
         noise_rho: float = 0.5,
+        sampler: str = "sde",
+        sde_eps: float = 0.1,
+        sde_eps_schedule: str = "t2",
+        inference_seed: Optional[int] = None,
         device: Optional[str] = None,
     ):
         """
@@ -197,6 +202,20 @@ class FlashEdgesInferenceEngine:
             noise_rho: Structured-noise sharing strength in [0,1] for the
                 linear-flow prior (0.5 = half shared across channels/frames,
                 0 = fully independent, 1 = fully rank-one).
+            sampler: "sde" (default) or "ode". "sde" integrates the
+                marginal-preserving SDE of the linear interpolant (stochastic
+                interpolants, Albergo & Vanden-Eijnden 2022; Song et al. 2021)
+                instead of the probability-flow ODE. Only implemented for
+                interpolation="linear"; any other interpolation falls back to
+                ODE with a warning.
+            sde_eps: Global SDE noise scale eps_0. 0.0 recovers the ODE
+                exactly; a sensible sweep range is ~0.05-0.5.
+            sde_eps_schedule: Time profile of eps(t): "const" (eps_0),
+                "t" (eps_0 * t), or "t2" (eps_0 * t^2, default). "t2" keeps
+                eps(t) * s_t bounded despite the score's 1/t^2 singularity
+                and vanishes at the data end so the final frame is not noisy.
+            inference_seed: Optional seed for reproducible sampling noise
+                (initial structured prior + SDE innovations).
             device: 'cuda' or 'cpu' (auto-detected if None).
         """
         self.model_path = model_path
@@ -208,6 +227,16 @@ class FlashEdgesInferenceEngine:
         self.interpolation = interpolation
         self.use_residual = use_residual
         self.noise_rho = noise_rho
+        self.sampler = sampler
+        self.sde_eps = sde_eps
+        self.sde_eps_schedule = sde_eps_schedule
+        self.inference_seed = inference_seed
+        if self.sampler == "sde" and self.interpolation != "linear":
+            logger.warning(
+                "SDE sampler is only implemented for interpolation='linear' "
+                f"(got '{self.interpolation}'); falling back to ODE."
+            )
+            self.sampler = "ode"
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -260,6 +289,20 @@ class FlashEdgesInferenceEngine:
     @staticmethod
     def _extract_patch(image: torch.Tensor, x: int, y: int, ps: int) -> torch.Tensor:
         return image[..., y: y + ps, x: x + ps]
+
+    def _sde_eps_at(self, t_val: float) -> float:
+        """SDE noise level eps(t) for the stochastic sampler.
+
+        eps(t) = sde_eps * g(t) with g given by sde_eps_schedule:
+            - "const": g = 1
+            - "t":     g = t
+            - "t2":    g = t^2 (default; vanishes at the data end)
+        """
+        if self.sde_eps_schedule == "const":
+            return self.sde_eps
+        if self.sde_eps_schedule == "t":
+            return self.sde_eps * t_val
+        return self.sde_eps * t_val * t_val
 
     @staticmethod
     def _get_gaussian_weights(patch_size: int, device: str, sigma_scale: float = 0.3) -> torch.Tensor:
@@ -331,6 +374,17 @@ class FlashEdgesInferenceEngine:
         self.model.eval()
         self.model.to(self.device)
 
+        logger.info(f"sampler: {self.sampler}")
+        if self.sampler == "sde":
+            logger.info(f"sde_eps: {self.sde_eps} (schedule={self.sde_eps_schedule})")
+
+        noise_generator = None
+        if self.inference_seed is not None:
+            generator_device = "cuda" if str(self.device).startswith("cuda") else "cpu"
+            noise_generator = torch.Generator(device=generator_device)
+            noise_generator.manual_seed(self.inference_seed)
+            logger.info(f"Using inference noise seed {self.inference_seed}")
+
         C = c_sat + c_metar
         _, _, T_ctx, H_big, W_big = initial_context.shape
 
@@ -367,6 +421,7 @@ class FlashEdgesInferenceEngine:
             x_t = structured_gaussian_noise(
                 (1, C, nb_forecast, H_big, W_big),
                 device=self.device, rho=self.noise_rho,
+                generator=noise_generator,
             )
 
             for i in tqdm(range(self.denoising_steps), desc="Denoising"):
@@ -487,8 +542,39 @@ class FlashEdgesInferenceEngine:
                 averaged_velocity = aggregated_velocity.float()
                 del aggregated_velocity, weights_sum
 
-                # Euler step: x_t = x_t - v * dt
+                # SDE only applies to interpolation="linear" (constructor
+                # guard forces sampler="ode" otherwise).
+                eps_t = self._sde_eps_at(t_val) if self.sampler == "sde" else 0.0
+                if eps_t > 0.0:
+                    # Marginal-preserving SDE for the linear path (stochastic
+                    # interpolants, Albergo & Vanden-Eijnden 2022; Song et al.
+                    # 2021). Integrating backward in t (t: 1 -> 0):
+                    #   x_{t-dt} = x_t - [u_t - eps(t)*s_t]*dt
+                    #            + sqrt(2*eps(t)*dt) * z
+                    # The score follows exactly from the aggregated velocity
+                    # via x_pred = x_t - t*u_t (u_t = (x_t - x_pred)/t):
+                    #   s_t = ((1-t)*x_pred - x_t)/t^2 = -(x_t + (1-t)*u_t)/t
+                    #   drift = u_t + (eps(t)/t) * (x_t + (1-t)*u_t)
+                    # In-place: turn averaged_velocity into the drift.
+                    # eps(t) = sde_eps * t^2 (default "t2") keeps eps(t)*s_t
+                    # bounded and kills the injected noise at the data end.
+                    # sde_eps=0 recovers the ODE exactly.
+                    averaged_velocity.mul_(1.0 + eps_t * (1.0 - t_val) / t_val)
+                    averaged_velocity.add_(x_t, alpha=eps_t / t_val)
+
+                # Euler(-Maruyama) drift step: x_t = x_t - drift * dt
                 x_t.sub_(averaged_velocity, alpha=dt)
+
+                if eps_t > 0.0:
+                    sde_noise = structured_gaussian_noise(
+                        x_t.shape,
+                        device=self.device,
+                        rho=self.noise_rho,
+                        generator=noise_generator,
+                    )
+                    x_t.add_(sde_noise, alpha=math.sqrt(2.0 * eps_t * dt))
+                    del sde_noise
+
                 x_t.clamp_(-7, 8)
                 del averaged_velocity
 
