@@ -29,6 +29,7 @@ Output: GeoTIFF forecast files per timestep, optionally converted to COG.
 import os
 import sys
 import math
+import shutil
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -94,9 +95,14 @@ def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
         logger.warning(f"Input file not found: {input_path}")
         return input_path
 
-    import tempfile
-    temp_dir = tempfile.gettempdir()
-    temp_cog = os.path.join(temp_dir, f"temp_cog_{os.path.basename(input_path)}")
+    # Write the temp COG in the SAME directory as the output file.
+    # os.rename across different filesystems (e.g. /tmp on local SSD vs
+    # forecasts/ on Lustre) fails with EXDEV (Errno 18), and the previous
+    # os.remove(input_path) before the rename meant the original was lost
+    # when the rename failed.  Keeping the temp file co-located guarantees
+    # the final rename is same-filesystem (atomic on POSIX).
+    output_dir = os.path.dirname(os.path.abspath(input_path))
+    temp_cog = os.path.join(output_dir, f".temp_cog_{os.path.basename(input_path)}")
 
     try:
         logger.info(f"Converting to COG: {input_path}")
@@ -134,11 +140,12 @@ def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
                     logger.warning(f"COG may not be properly tiled: {cog_src.profile}")
 
         if delete_original:
-            os.remove(input_path)
-            os.rename(temp_cog, input_path)
+            # shutil.move atomically replaces the destination on POSIX (same
+            # filesystem), so there is no window where the file is missing.
+            shutil.move(temp_cog, input_path)
             logger.info(f"COG created: {input_path}")
         else:
-            os.rename(temp_cog, input_path.replace('.tiff', '_cog.tiff'))
+            shutil.move(temp_cog, input_path.replace('.tiff', '_cog.tiff'))
             logger.info(f"COG created: {input_path.replace('.tiff', '_cog.tiff')}")
         return input_path
     except Exception as e:
