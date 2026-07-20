@@ -178,7 +178,7 @@ class FlashEdgesInferenceEngine:
         context_frames: int = 4,
         interpolation: str = "linear",
         use_residual: bool = True,
-        noise_rho: float = 0.5,
+        noise_rho: float = 0.,
         sampler: str = "sde",
         sde_eps: float = 0.1,
         sde_eps_schedule: str = "t2",

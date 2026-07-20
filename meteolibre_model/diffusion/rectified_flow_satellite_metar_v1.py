@@ -219,7 +219,7 @@ def get_x_t_rf(x0, x1, t, interpolation="linear"):
         raise ValueError(f"Unknown interpolation schedule: {interpolation}")
 
 
-def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_factor=3):
+def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_factor=2):
     """Vectorized Gaussian blur via sigma binning.
     blur_sigma: (B,) tensor, sigma in pixels.
     """
@@ -269,7 +269,7 @@ def trainer_step(
     use_residual=True,
     metar_loss_weight=0.05,
     metar_drop_frac=0.05,
-    noise_rho=0.5,
+    noise_rho=0.0,
     temporal_weight_scale=1.0,
 ):
     """One flow-matching training step with x-prediction.
