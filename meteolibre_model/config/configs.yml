@@ -12,7 +12,7 @@ model_v1_global_satellite_metar:
   learning_rate: 0.0003
   num_epochs: 500
   seed: 42
-  sigma_noise_input: 8.0
+  sigma_noise_input: 10.0
   gradient_clip_value: 1.0
   residual: true
   dataset_path: "."
