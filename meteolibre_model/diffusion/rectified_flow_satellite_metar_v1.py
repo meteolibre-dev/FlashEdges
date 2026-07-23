@@ -271,6 +271,8 @@ def trainer_step(
     metar_drop_frac=0.05,
     noise_rho=0.0,
     temporal_weight_scale=1.0,
+    grad_weight=0.1,
+    temporal_grad_weight=0.1,
 ):
     """One flow-matching training step with x-prediction.
 
@@ -291,9 +293,20 @@ def trainer_step(
     frame weighting), 1.0 = full linear ramp. Ported from flashnet's
     rectified_flow_lightning_shortcut_xpred_blur_v2.
 
+    ``grad_weight`` / ``temporal_grad_weight`` (default 0.1) scale two
+    FastNet-style regularizers (Dunstan et al. 2026, AIES-D-25-0090.1), ported
+    from flashnet's rectified_flow_lightning_shortcut_xpred_blur_v2:
+    horizontal-gradient matching (suppresses the nonphysical spatial artifacts
+    that compound during autoregressive rollout) and temporal-gradient
+    matching (suppresses frame-to-frame jitter / implausible evolution). Both
+    are applied on the satellite branch only and weighted by the same per-t
+    factor as the main x-loss, so they focus on data-end predictions (t->0).
+    0 disables each (backward compatible).
+
     Returns (total_loss, loss_sat, loss_metar, components) where ``components``
     is a dict of detached per-channel masked-MSE tensors
-    (``sat_per_chan``, ``metar_per_chan``) for diagnostic logging.
+    (``sat_per_chan``, ``metar_per_chan``) for diagnostic logging, plus the
+    detached scalar regularizer losses (``loss_grad_sat``, ``loss_tgrad_sat``).
     """
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -522,11 +535,62 @@ def trainer_step(
     metar_per_chan = (metar_diff * met_m).sum(dim=(0, 2, 3, 4)) / met_cnt  # (c_metar,)
     loss_metar = (metar_per_chan * metar_lw).mean()
 
-    total = loss_sat + metar_loss_weight * loss_metar
+    # --- Horizontal-gradient regularization (FastNet-style artifact suppressor) ---
+    # Ported from flashnet's rectified_flow_lightning_shortcut_xpred_blur_v2
+    # (adapted from Dunstan et al. 2026, FastNet, AIES-D-25-0090.1): penalize
+    # mismatches in the spatial derivatives (d/dy, d/dx) of the predicted field
+    # vs the target. FastNet credits this as the PRIMARY lever for suppressing
+    # the nonphysical artifacts that compound during autoregressive rollout.
+    # Applied here on the x-prediction (clean denoised field) and weighted by
+    # the same per-t factor as the main x-loss, so it focuses on data-end
+    # predictions (t->0) where gradients are meaningful and barely penalizes
+    # near-noise samples (t->1). grad_weight=0 disables it (backward compatible).
+    # METAR is EXCLUDED: it is sparse point obs on a sentinel background, so
+    # legitimate spatial gradients at isolated station pixels are large and
+    # sharp, and a squared-gradient penalty would over-smooth stations instead
+    # of suppressing artifacts.
+    if grad_weight > 0:
+        # sat spatial gradients on (H, W) dims, masked like the main sat loss
+        gy_sp, gx_sp = torch.gradient(x_sat_pred_emp, dim=(-2, -1))
+        gy_st, gx_st = torch.gradient(x0_emp[:, :c_sat], dim=(-2, -1))
+        grad_err_sat = (gy_sp - gy_st) ** 2 + (gx_sp - gx_st) ** 2
+        loss_grad_sat = (weight * grad_err_sat)[sat_mask_emp].mean()
+    else:
+        loss_grad_sat = torch.tensor(0.0, device=device)
+
+    # --- Temporal-gradient regularization (FastNet-style, forecast-time axis) ---
+    # Complement to the spatial term above: penalize mismatches in the
+    # adjacent-frame finite difference (d/dT) of predicted vs target. The
+    # spatial term kills per-frame spatial artifacts; this kills frame-to-frame
+    # jitter / implausible evolution that compounds during AR rollout. Satellite
+    # channels use absolute (non-residual) targets, so d(x0) = d(data) is the
+    # true inter-frame evolution in normalized units; the prediction lives in
+    # the same space, so the comparison is well-posed. Uses a clean forward
+    # difference so only forecast frames are involved (the context->forecast-0
+    # transition is excluded by construction). Both adjacent frames must be
+    # valid (masked) for the error to count. METAR excluded for the same reason
+    # as the spatial term. Backward compatible: temporal_grad_weight=0 disables
+    # it.
+    if temporal_grad_weight > 0:
+        # later-frame weight when the temporal ramp is active, else broadcast
+        wt = weight if weight.shape[2] == 1 else weight[:, :, 1:]
+
+        dT_pred = x_sat_pred_emp[:, :, 1:] - x_sat_pred_emp[:, :, :-1]
+        dT_tgt = x0_emp[:, :c_sat][:, :, 1:] - x0_emp[:, :c_sat][:, :, :-1]
+        pair_sat = sat_mask_emp[:, :, 1:] & sat_mask_emp[:, :, :-1]
+        loss_tgrad_sat = (wt * (dT_pred - dT_tgt) ** 2)[pair_sat].mean()
+    else:
+        loss_tgrad_sat = torch.tensor(0.0, device=device)
+
+    total = (loss_sat + metar_loss_weight * loss_metar
+             + grad_weight * loss_grad_sat
+             + temporal_grad_weight * loss_tgrad_sat)
 
     components = {
         "sat_per_chan": sat_per_chan.detach(),
         "metar_per_chan": metar_per_chan.detach(),
+        "loss_grad_sat": loss_grad_sat.detach(),
+        "loss_tgrad_sat": loss_tgrad_sat.detach(),
     }
     return total, loss_sat, loss_metar, components
 
