@@ -313,6 +313,7 @@ def main():
     # strict=False: load only the keys present in the checkpoint; any new heads
     # keep their fresh initialization. Runs before torch.compile on purpose.
     model_path = f"{MODEL_DIR}checkpoint.safetensors"
+    optimizer_path = f"{MODEL_DIR}checkpoint_optimizer.pt"
     if os.path.exists(model_path):
         state_dict = load_file(model_path)
         model.load_state_dict(state_dict, strict=False)
@@ -338,6 +339,21 @@ def main():
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
     if isinstance(optimizer, list):
         optimizer = CombinedOptimizer(optimizer)
+
+    # --- Resume optimizer state (after prepare so states land on the right
+    # device / wrapped optimizer). CombinedOptimizer.load_state_dict expects
+    # a list of per-sub-optimizer state dicts (matching state_dict()). ---
+    if os.path.exists(optimizer_path):
+        try:
+            opt_state = torch.load(optimizer_path, map_location=device)
+            optimizer.load_state_dict(opt_state)
+            print(f"[resume] loaded optimizer state from {optimizer_path}", flush=True)
+        except Exception as e:
+            print(f"[resume] failed to load optimizer state ({e}); "
+                  f"starting with fresh optimizer", flush=True)
+    else:
+        print(f"[resume] no optimizer checkpoint at {optimizer_path}; "
+              f"starting with fresh optimizer", flush=True)
 
     global_step = 0
 
@@ -474,7 +490,11 @@ def main():
                 )
                 save_file(model_to_save.state_dict(), save_path)
                 save_file(model_to_save.state_dict(), save_path_checkpoint)
+                # Persist optimizer state (Muon + AdamW) so a resume restores
+                # momentum / second-moment estimates, not just weights.
+                torch.save(optimizer.state_dict(), f"{MODEL_DIR}checkpoint_optimizer.pt")
                 accelerator.print(f"Model saved to {save_path}")
+                accelerator.print(f"Optimizer state saved to {MODEL_DIR}checkpoint_optimizer.pt")
 
         accelerator.wait_for_everyone()
 
