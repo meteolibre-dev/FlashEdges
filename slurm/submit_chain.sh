@@ -21,7 +21,7 @@
 
 set -uo pipefail
 
-N="${N:-10}"
+N="${N:-8}"
 DEPENDENCY="${DEPENDENCY:-afterany}"
 SLURM_SCRIPT="${SLURM_SCRIPT:-slurm/train_austral.sl}"
 

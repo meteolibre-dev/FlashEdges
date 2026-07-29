@@ -43,7 +43,7 @@ pip install --user --no-cache-dir \
 #    --hf_dataset_repo meteolibre-dev/global_sat_metar
 
 # Option B — use the data you already downloaded locally:
-python3 scripts/train_rf_satellite_metar.py \
+python3 scripts/train_rf_satellite_metar_peft.py \
      --dataset_path "$DATA_DIR/"
 
 # Option C — multi-GPU: set --gpus=4 above, then use accelerate launch:
