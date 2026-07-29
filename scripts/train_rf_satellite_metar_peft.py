@@ -158,13 +158,13 @@ def main():
     parser.add_argument(
         "--config",
         type=str,
-        default="model_v1_global_satellite_metar",
+        default="model_v2_global_satellite_metar",
         help="Config name in meteolibre_model/config/configs.yml",
     )
     parser.add_argument(
         "--base_checkpoint",
         type=str,
-        default=None,
+        default="models/checkpoint.safetensors",
         help="Path to the sat-denoised base checkpoint to load (strict=False). "
         "Defaults to the config model_dir checkpoint.safetensors.",
     )
