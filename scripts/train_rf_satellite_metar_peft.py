@@ -309,10 +309,11 @@ def main():
         modules_to_save=MODULES_TO_SAVE,
         bias="none",
     )
-    model = get_peft_model(model, lora_config)
 
     # correction metar setup
     model.jit.isolate_metar_grad = False
+
+    model = get_peft_model(model, lora_config)
 
     # Sanity: report trainable params per group.
     if accelerator.is_main_process:
