@@ -428,11 +428,21 @@ def main():
         accelerator.print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {avg_loss:.4f}")
 
         # --- Visualization (main process only) ---
+        # NOTE: accelerator.unwrap_model() strips the Accelerate/DDP wrapper
+        # but NOT torch.compile, so the result is still an OptimizedModule.
+        # Re-compiling the inference graph (eval + no_grad + 128-step Euler
+        # loop) triggers an inductor quantization-pass bug on PT 2.6:
+        #   AttributeError: 'float' object has no attribute 'meta'
+        # (quantization.py pattern-matcher hits a float literal instead of an
+        # FX node). Bypass compile entirely for the once-per-epoch viz by
+        # reaching the uncompiled module via _orig_mod. Generation runs eager,
+        # which is fine -- it's 128 steps, not a hot path.
         if accelerator.is_main_process:
             with torch.no_grad():
                 unwrapped_model = accelerator.unwrap_model(model)
+                gen_model = getattr(unwrapped_model, "_orig_mod", unwrapped_model)
                 generated, x_target = full_image_generation(
-                    unwrapped_model,
+                    gen_model,
                     batch,
                     steps=128,
                     device=accelerator.device,
