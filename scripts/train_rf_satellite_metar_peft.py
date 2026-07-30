@@ -311,6 +311,9 @@ def main():
     )
     model = get_peft_model(model, lora_config)
 
+    # correction metar setup
+    model.jit.isolate_metar_grad = False
+
     # Sanity: report trainable params per group.
     if accelerator.is_main_process:
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
