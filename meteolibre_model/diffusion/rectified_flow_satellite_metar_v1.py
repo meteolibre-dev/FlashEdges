@@ -414,11 +414,11 @@ def trainer_step(
         # same factor -- preserves the spatial/temporal structure, only the
         # overall amplitude is perturbed. Applied to only 50% of samples so the
         # model still frequently sees clean context.
-        amplitude_jitter_std = 0.20
-        amplitude_jitter_prob = 0.5
-        jitter_mask = (torch.rand(b, device=device) < amplitude_jitter_prob).view(b, 1, 1, 1, 1)
-        scale = 1.0 + amplitude_jitter_std * torch.randn(b, 1, 1, 1, 1, device=device)
-        sat_ctx_t = sat_ctx_t * (jitter_mask * scale + ~jitter_mask)
+        # amplitude_jitter_std = 0.20
+        # amplitude_jitter_prob = 0.5
+        # jitter_mask = (torch.rand(b, device=device) < amplitude_jitter_prob).view(b, 1, 1, 1, 1)
+        # scale = 1.0 + amplitude_jitter_std * torch.randn(b, 1, 1, 1, 1, device=device)
+        # sat_ctx_t = sat_ctx_t * (jitter_mask * scale + ~jitter_mask)
 
         # rebuild context: blurred+jittered sat channels, untouched METAR
         x_context_t = torch.cat([sat_ctx_t, x_context[:, c_sat:]], dim=1)
