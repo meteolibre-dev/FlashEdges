@@ -1,0 +1,464 @@
+{
+  "bounds": [
+    -180.0,
+    -85.0,
+    180.0,
+    85.0
+  ],
+  "coordinates": [
+    [
+      -180.0,
+      85.0
+    ],
+    [
+      180.0,
+      85.0
+    ],
+    [
+      180.0,
+      -85.0
+    ],
+    [
+      -180.0,
+      -85.0
+    ]
+  ],
+  "bands": [
+    {
+      "key": "tmpc",
+      "display": "2m Temperature",
+      "unit": "C",
+      "vmin": -40,
+      "vmax": 50,
+      "alpha_mode": "mask",
+      "gradient": [
+        [
+          0.0,
+          "rgb(30,51,165)"
+        ],
+        [
+          0.091,
+          "rgb(69,86,180)"
+        ],
+        [
+          0.182,
+          "rgb(108,121,195)"
+        ],
+        [
+          0.273,
+          "rgb(149,158,210)"
+        ],
+        [
+          0.364,
+          "rgb(188,194,225)"
+        ],
+        [
+          0.455,
+          "rgb(227,229,239)"
+        ],
+        [
+          0.545,
+          "rgb(242,226,226)"
+        ],
+        [
+          0.636,
+          "rgb(232,183,183)"
+        ],
+        [
+          0.727,
+          "rgb(222,141,141)"
+        ],
+        [
+          0.818,
+          "rgb(211,97,97)"
+        ],
+        [
+          0.909,
+          "rgb(201,55,55)"
+        ],
+        [
+          1.0,
+          "rgb(191,12,12)"
+        ]
+      ]
+    },
+    {
+      "key": "p01m",
+      "display": "Precipitation",
+      "unit": "dBZ",
+      "vmin": 0,
+      "vmax": 65,
+      "alpha_mode": "threshold",
+      "gradient": [
+        [
+          0.0,
+          "rgb(0,237,237)"
+        ],
+        [
+          0.091,
+          "rgb(0,199,111)"
+        ],
+        [
+          0.182,
+          "rgb(0,171,0)"
+        ],
+        [
+          0.273,
+          "rgb(0,220,0)"
+        ],
+        [
+          0.364,
+          "rgb(39,255,0)"
+        ],
+        [
+          0.455,
+          "rgb(183,255,0)"
+        ],
+        [
+          0.545,
+          "rgb(255,226,0)"
+        ],
+        [
+          0.636,
+          "rgb(255,168,0)"
+        ],
+        [
+          0.727,
+          "rgb(255,77,0)"
+        ],
+        [
+          0.818,
+          "rgb(247,0,17)"
+        ],
+        [
+          0.909,
+          "rgb(212,0,98)"
+        ],
+        [
+          1.0,
+          "rgb(178,0,178)"
+        ]
+      ]
+    },
+    {
+      "key": "cloud_cover",
+      "display": "Cloud Cover",
+      "unit": "",
+      "vmin": 0,
+      "vmax": 1,
+      "alpha_mode": "value",
+      "gradient": [
+        [
+          0.0,
+          "rgb(0,0,0)"
+        ],
+        [
+          0.091,
+          "rgb(23,23,23)"
+        ],
+        [
+          0.182,
+          "rgb(46,46,46)"
+        ],
+        [
+          0.273,
+          "rgb(70,70,70)"
+        ],
+        [
+          0.364,
+          "rgb(93,93,93)"
+        ],
+        [
+          0.455,
+          "rgb(116,116,116)"
+        ],
+        [
+          0.545,
+          "rgb(139,139,139)"
+        ],
+        [
+          0.636,
+          "rgb(162,162,162)"
+        ],
+        [
+          0.727,
+          "rgb(185,185,185)"
+        ],
+        [
+          0.818,
+          "rgb(209,209,209)"
+        ],
+        [
+          0.909,
+          "rgb(232,232,232)"
+        ],
+        [
+          1.0,
+          "rgb(255,255,255)"
+        ]
+      ]
+    },
+    {
+      "key": "gmgsi_lwir",
+      "display": "GMGSI LWIR (IR)",
+      "unit": "",
+      "vmin": 0.0,
+      "vmax": 198.61680725097654,
+      "alpha_mode": "mask",
+      "gradient": [
+        [
+          0.0,
+          "rgb(7,0,45)"
+        ],
+        [
+          0.091,
+          "rgb(4,23,88)"
+        ],
+        [
+          0.182,
+          "rgb(0,46,131)"
+        ],
+        [
+          0.273,
+          "rgb(0,84,140)"
+        ],
+        [
+          0.364,
+          "rgb(0,124,140)"
+        ],
+        [
+          0.455,
+          "rgb(9,158,107)"
+        ],
+        [
+          0.545,
+          "rgb(24,189,53)"
+        ],
+        [
+          0.636,
+          "rgb(134,204,31)"
+        ],
+        [
+          0.727,
+          "rgb(242,212,12)"
+        ],
+        [
+          0.818,
+          "rgb(242,137,4)"
+        ],
+        [
+          0.909,
+          "rgb(235,67,3)"
+        ],
+        [
+          1.0,
+          "rgb(216,0,12)"
+        ]
+      ]
+    }
+  ],
+  "default_band": "tmpc",
+  "frame_interval_hours": 1,
+  "frame_count": 18,
+  "frames": [
+    {
+      "ts": "202606281100",
+      "label": "2026-06-28 11:00 UTC",
+      "iso": "2026-06-28T11:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606281100.webp",
+        "p01m": "frames/p01m_202606281100.webp",
+        "cloud_cover": "frames/cloud_cover_202606281100.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281100.webp"
+      }
+    },
+    {
+      "ts": "202606281200",
+      "label": "2026-06-28 12:00 UTC",
+      "iso": "2026-06-28T12:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606281200.webp",
+        "p01m": "frames/p01m_202606281200.webp",
+        "cloud_cover": "frames/cloud_cover_202606281200.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281200.webp"
+      }
+    },
+    {
+      "ts": "202606281300",
+      "label": "2026-06-28 13:00 UTC",
+      "iso": "2026-06-28T13:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606281300.webp",
+        "p01m": "frames/p01m_202606281300.webp",
+        "cloud_cover": "frames/cloud_cover_202606281300.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281300.webp"
+      }
+    },
+    {
+      "ts": "202606281400",
+      "label": "2026-06-28 14:00 UTC",
+      "iso": "2026-06-28T14:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606281400.webp",
+        "p01m": "frames/p01m_202606281400.webp",
+        "cloud_cover": "frames/cloud_cover_202606281400.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281400.webp"
+      }
+    },
+    {
+      "ts": "202606281500",
+      "label": "2026-06-28 15:00 UTC",
+      "iso": "2026-06-28T15:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606281500.webp",
+        "p01m": "frames/p01m_202606281500.webp",
+        "cloud_cover": "frames/cloud_cover_202606281500.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281500.webp"
+      }
+    },
+    {
+      "ts": "202606281600",
+      "label": "2026-06-28 16:00 UTC",
+      "iso": "2026-06-28T16:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606281600.webp",
+        "p01m": "frames/p01m_202606281600.webp",
+        "cloud_cover": "frames/cloud_cover_202606281600.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281600.webp"
+      }
+    },
+    {
+      "ts": "202606281700",
+      "label": "2026-06-28 17:00 UTC",
+      "iso": "2026-06-28T17:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606281700.webp",
+        "p01m": "frames/p01m_202606281700.webp",
+        "cloud_cover": "frames/cloud_cover_202606281700.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281700.webp"
+      }
+    },
+    {
+      "ts": "202606281800",
+      "label": "2026-06-28 18:00 UTC",
+      "iso": "2026-06-28T18:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606281800.webp",
+        "p01m": "frames/p01m_202606281800.webp",
+        "cloud_cover": "frames/cloud_cover_202606281800.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281800.webp"
+      }
+    },
+    {
+      "ts": "202606281900",
+      "label": "2026-06-28 19:00 UTC",
+      "iso": "2026-06-28T19:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606281900.webp",
+        "p01m": "frames/p01m_202606281900.webp",
+        "cloud_cover": "frames/cloud_cover_202606281900.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281900.webp"
+      }
+    },
+    {
+      "ts": "202606282000",
+      "label": "2026-06-28 20:00 UTC",
+      "iso": "2026-06-28T20:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606282000.webp",
+        "p01m": "frames/p01m_202606282000.webp",
+        "cloud_cover": "frames/cloud_cover_202606282000.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606282000.webp"
+      }
+    },
+    {
+      "ts": "202606282100",
+      "label": "2026-06-28 21:00 UTC",
+      "iso": "2026-06-28T21:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606282100.webp",
+        "p01m": "frames/p01m_202606282100.webp",
+        "cloud_cover": "frames/cloud_cover_202606282100.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606282100.webp"
+      }
+    },
+    {
+      "ts": "202606282200",
+      "label": "2026-06-28 22:00 UTC",
+      "iso": "2026-06-28T22:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606282200.webp",
+        "p01m": "frames/p01m_202606282200.webp",
+        "cloud_cover": "frames/cloud_cover_202606282200.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606282200.webp"
+      }
+    },
+    {
+      "ts": "202606282300",
+      "label": "2026-06-28 23:00 UTC",
+      "iso": "2026-06-28T23:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606282300.webp",
+        "p01m": "frames/p01m_202606282300.webp",
+        "cloud_cover": "frames/cloud_cover_202606282300.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606282300.webp"
+      }
+    },
+    {
+      "ts": "202606290000",
+      "label": "2026-06-29 00:00 UTC",
+      "iso": "2026-06-29T00:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606290000.webp",
+        "p01m": "frames/p01m_202606290000.webp",
+        "cloud_cover": "frames/cloud_cover_202606290000.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606290000.webp"
+      }
+    },
+    {
+      "ts": "202606290100",
+      "label": "2026-06-29 01:00 UTC",
+      "iso": "2026-06-29T01:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606290100.webp",
+        "p01m": "frames/p01m_202606290100.webp",
+        "cloud_cover": "frames/cloud_cover_202606290100.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606290100.webp"
+      }
+    },
+    {
+      "ts": "202606290200",
+      "label": "2026-06-29 02:00 UTC",
+      "iso": "2026-06-29T02:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606290200.webp",
+        "p01m": "frames/p01m_202606290200.webp",
+        "cloud_cover": "frames/cloud_cover_202606290200.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606290200.webp"
+      }
+    },
+    {
+      "ts": "202606290300",
+      "label": "2026-06-29 03:00 UTC",
+      "iso": "2026-06-29T03:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606290300.webp",
+        "p01m": "frames/p01m_202606290300.webp",
+        "cloud_cover": "frames/cloud_cover_202606290300.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606290300.webp"
+      }
+    },
+    {
+      "ts": "202606290400",
+      "label": "2026-06-29 04:00 UTC",
+      "iso": "2026-06-29T04:00:00Z",
+      "images": {
+        "tmpc": "frames/tmpc_202606290400.webp",
+        "p01m": "frames/p01m_202606290400.webp",
+        "cloud_cover": "frames/cloud_cover_202606290400.webp",
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606290400.webp"
+      }
+    }
+  ],
+  "format": "webp"
+}

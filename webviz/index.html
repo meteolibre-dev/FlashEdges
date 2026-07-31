@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FlashEdges Forecast Viewer</title>
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@maptiler/sdk@4.0.2/dist/maptiler-sdk.css" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; font-family: -apple-system,
+    BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  #map { position: absolute; inset: 0; }
+
+  .panel {
+    position: absolute; top: 12px; left: 12px; z-index: 5;
+    width: 290px; max-width: calc(100vw - 24px);
+    background: rgba(18, 20, 28, 0.92);
+    color: #e8eaf0; border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px; padding: 12px 14px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+    backdrop-filter: blur(6px);
+  }
+  .panel h1 { font-size: 14px; margin: 0 0 8px; letter-spacing: .3px; }
+  .panel h1 small { color: #8b93a7; font-weight: 400; font-size: 11px; }
+  .section { margin: 10px 0 6px; }
+  .label { font-size: 11px; color: #9aa3b8; text-transform: uppercase;
+           letter-spacing: .6px; margin-bottom: 5px; }
+
+  .bands { display: flex; flex-wrap: wrap; gap: 5px; }
+  .bands button {
+    font-size: 11px; padding: 5px 8px; cursor: pointer;
+    background: rgba(255,255,255,0.06); color: #dfe3ee;
+    border: 1px solid rgba(255,255,255,0.14); border-radius: 7px;
+    transition: all .12s;
+  }
+  .bands button:hover { background: rgba(255,255,255,0.14); }
+  .bands button.active { background: #2b6cff; border-color: #2b6cff;
+    color: #fff; }
+
+  .legend { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .legend .bar { flex: 1; height: 12px; border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.2); }
+  .legend span { font-size: 10px; color: #c0c6d6; min-width: 34px; }
+  .legend .unit { font-size: 10px; color: #8b93a7; margin-left: 4px; }
+
+  input[type=range] { width: 100%; accent-color: #2b6cff; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .row > .grow { flex: 1; }
+  button.play {
+    width: 34px; height: 30px; font-size: 14px; cursor: pointer;
+    background: #2b6cff; color: #fff; border: none; border-radius: 7px;
+  }
+  button.play:hover { background: #1f57d8; }
+  select, .row select {
+    background: rgba(255,255,255,0.06); color: #dfe3ee;
+    border: 1px solid rgba(255,255,255,0.14); border-radius: 6px;
+    padding: 3px 5px; font-size: 11px;
+  }
+  .time-label { font-size: 12px; color: #c0c6d6; text-align: center;
+    margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+  .live { border-top: 1px solid rgba(255,255,255,0.1); margin-top: 10px;
+    padding-top: 8px; }
+  .live .label { margin-bottom: 6px; }
+  .live .bands button.active { background: #1fa971; border-color: #1fa971; }
+
+  #keyrow { display: flex; gap: 6px; margin-top: 6px; }
+  #keyrow input { flex: 1; min-width: 0; background: rgba(255,255,255,0.06);
+    color: #dfe3ee; border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 6px; padding: 4px 6px; font-size: 11px; }
+  #keyrow button { font-size: 11px; padding: 4px 8px; cursor: pointer;
+    background: rgba(255,255,255,0.1); color: #dfe3ee; border: 1px solid
+    rgba(255,255,255,0.16); border-radius: 6px; }
+
+  #banner { position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    z-index: 6; max-width: 90vw; background: #b3320f; color: #fff;
+    padding: 8px 14px; border-radius: 8px; font-size: 12px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.4); display: none; }
+  #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    z-index: 4; color: #c0c6d6; font-size: 13px; }
+  .hint { font-size: 10px; color: #8b93a7; margin-top: 6px; line-height: 1.4; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="loading">Loading map…</div>
+<div id="banner"></div>
+
+<div class="panel">
+  <h1>FlashEdges Forecast <small id="framecount"></small></h1>
+
+  <div class="section">
+    <div class="label">Band</div>
+    <div class="bands" id="bands"></div>
+    <div class="legend">
+      <span id="legmin">—</span>
+      <div class="bar" id="legbar"></div>
+      <span id="legmax">—</span>
+      <span class="unit" id="legunit"></span>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="label">View</div>
+    <div class="row" style="gap:8px">
+      <button id="globe" class="bands active" style="font-size:11px;padding:5px 10px;cursor:pointer;border-radius:7px">∘ Globe</button>
+      <div class="grow"><input type="range" id="opacity" min="0" max="100" value="85" /></div>
+      <span style="font-size:11px;color:#9aa3b8;align-self:center">opacity <span id="opval">85%</span></span>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="label">Time</div>
+    <div class="row">
+      <button class="play" id="play" title="Play / pause">▶</button>
+      <div class="grow"><input type="range" id="time" min="0" max="0" step="1" value="0" /></div>
+      <select id="speed" title="Animation speed">
+        <option value="1000">1×</option>
+        <option value="700" selected>1.5×</option>
+        <option value="400">2.5×</option>
+        <option value="200">5×</option>
+        <option value="100">10×</option>
+      </select>
+    </div>
+    <div class="time-label" id="tlabel">—</div>
+  </div>
+
+  <div class="live">
+    <div class="label">MapTiler live weather (optional)</div>
+    <div class="bands" id="weather"></div>
+    <div class="hint">Adds MapTiler's hosted forecast layers (Radar /
+      Precipitation / Temperature) for comparison. Each animates the next
+      ~4 days with <code>animateByFactor(3600)</code>. Needs your API key.</div>
+  </div>
+
+  <div class="section">
+    <div class="label">MapTiler API key</div>
+    <div id="keyrow">
+      <input id="apikey" type="text" placeholder="paste key (stored locally)" />
+      <button id="setkey">Set</button>
+    </div>
+    <div class="hint">Free key at <a style="color:#8ab4ff"
+      href="https://cloud.maptiler.com/account/keys/" target="_blank">cloud.maptiler.com</a>.
+      Stored only in your browser (localStorage).</div>
+  </div>
+</div>
+
+<script src="manifest.js"></script>
+<script type="module">
+import {
+  Map as MtMap,
+  MapStyle as MtMapStyle,
+  NavigationControl as MtNavControl,
+  ScaleControl as MtScaleControl,
+  config as mtConfig,
+} from "https://esm.sh/@maptiler/sdk@4.0.2";
+
+"use strict";
+
+const M = window.__FE_MANIFEST;
+if (!M) {
+  showBanner("manifest.js not found. Run: python3 scripts/tiff_to_web.py forecasts/");
+  document.getElementById("loading").textContent =
+    "Run scripts/tiff_to_web.py first, then reload.";
+  throw new Error("no manifest");
+}
+
+// ---- file:// notice: MapLibre image sources need a real http origin ----
+if (location.protocol === "file:") {
+  showBanner("Open via a local server:  python3 -m http.server 8000  →  " +
+             "http://localhost:8000/webviz/   (image overlays need http origin)");
+}
+
+// ---- API key ----------------------------------------------------------
+function getKey() {
+  return localStorage.getItem("maptiler_key") ||
+         new URLSearchParams(location.search).get("key") || "";
+}
+function setKey(k) {
+  localStorage.setItem("maptiler_key", k.trim());
+  location.reload();
+}
+document.getElementById("setkey").onclick = () =>
+  setKey(document.getElementById("apikey").value);
+(function initKeyInput() {
+  const k = getKey();
+  if (k) document.getElementById("apikey").value = k;
+})();
+
+let apiKey = getKey();
+if (!apiKey) {
+  const k = prompt("Enter your MapTiler API key (free: cloud.maptiler.com). " +
+                   "You can paste it later in the panel.");
+  if (k) setKey(k);
+  else apiKey = "";
+}
+mtConfig.apiKey = apiKey;
+
+// ---- style: light/white background (like the weather-layer-switcher demo) -
+function resolveStyle() {
+  const S = MtMapStyle || {};
+  const tries = [
+    () => S.DATAVIZ && S.DATAVIZ.LIGHT,
+    () => S.DATAVIZ && S.DATAVIZ.light,
+    () => S.BASE && S.BASE.DEFAULT,
+    () => S.STREETS && S.STREETS.LIGHT,
+    () => S.STREETS,
+  ];
+  for (const f of tries) { try { const v = f(); if (v) return v; } catch (e) {} }
+  return "https://api.maptiler.com/maps/dataviz-light/style.json";
+}
+
+const map = new MtMap({
+  container: "map",
+  style: resolveStyle(),
+  center: [0, 25],
+  zoom: 1.2,
+  hash: true,
+  projection: "globe",   // 3D sphere (MapLibre globe projection)
+});
+map.addControl(new MtNavControl(), "top-right");
+map.addControl(new MtScaleControl({ unit: "metric" }), "bottom-left");
+
+// ---- globe / flat toggle ----------------------------------------------
+let isGlobe = true;
+const globeBtn = document.getElementById("globe");
+globeBtn.onclick = () => {
+  isGlobe = !isGlobe;
+  map.setProjection({ type: isGlobe ? "globe" : "mercator" });
+  globeBtn.textContent = isGlobe ? "∘ Globe" : "⬚ Flat";
+  globeBtn.classList.toggle("active", isGlobe);
+};
+
+document.getElementById("framecount").textContent =
+  `· ${M.frames.length} frames`;
+
+// ---- state -----------------------------------------------------------
+let currentBand = M.default_band;
+let currentFrame = 0;
+let playing = false;
+let timer = null;
+const SOURCE_ID = "fe-forecast";
+const LAYER_ID = "fe-forecast-layer";
+
+function bandInfo(k) { return M.bands.find(b => b.key === k); }
+function frameUrl(band, idx) {
+  // Resolve to an absolute URL so MapLibre's image source loads correctly
+  // regardless of the page path / trailing slash.
+  return new URL(M.frames[idx].images[band], document.baseURI).href;
+}
+
+// ---- UI: band buttons -----------------------------------------------
+const bandsEl = document.getElementById("bands");
+M.bands.forEach(b => {
+  const btn = document.createElement("button");
+  btn.textContent = b.display + (b.unit ? ` (${b.unit})` : "");
+  btn.dataset.key = b.key;
+  btn.onclick = () => selectBand(b.key);
+  bandsEl.appendChild(btn);
+});
+
+function renderLegend(b) {
+  const grad = (b.gradient || []).map(([t, c]) => `${c} ${(t * 100).toFixed(0)}%`)
+                                 .join(", ");
+  document.getElementById("legbar").style.background =
+    `linear-gradient(to right, ${grad})`;
+  const fmt = v => Number.isFinite(v) ? +v.toFixed(1) : v;
+  document.getElementById("legmin").textContent = fmt(b.vmin);
+  document.getElementById("legmax").textContent = fmt(b.vmax);
+  document.getElementById("legunit").textContent = b.unit || "";
+}
+
+function selectBand(k) {
+  currentBand = k;
+  [...bandsEl.children].forEach(c =>
+    c.classList.toggle("active", c.dataset.key === k));
+  renderLegend(bandInfo(k));
+  updateFrame();
+}
+
+// ---- frame update ----------------------------------------------------
+function updateFrame() {
+  const url = frameUrl(currentBand, currentFrame);
+  const src = map.getSource(SOURCE_ID);
+  if (src) src.updateImage({ url, coordinates: M.coordinates });
+  const f = M.frames[currentFrame];
+  document.getElementById("tlabel").textContent = f.label;
+  const slider = document.getElementById("time");
+  if (+slider.value !== currentFrame) slider.value = currentFrame;
+}
+
+// ---- opacity ---------------------------------------------------------
+const opSlider = document.getElementById("opacity");
+const opVal = document.getElementById("opval");
+opSlider.oninput = () => {
+  const v = +opSlider.value / 100;
+  opVal.textContent = opSlider.value + "%";
+  if (map.getLayer(LAYER_ID))
+    map.setPaintProperty(LAYER_ID, "raster-opacity", v);
+};
+
+// ---- timeline --------------------------------------------------------
+const timeSlider = document.getElementById("time");
+timeSlider.max = M.frames.length - 1;
+timeSlider.oninput = () => { currentFrame = +timeSlider.value; updateFrame(); };
+
+const playBtn = document.getElementById("play");
+const speedSel = document.getElementById("speed");
+function setPlaying(v) {
+  playing = v;
+  playBtn.textContent = playing ? "❚❚" : "▶";
+  if (timer) { clearInterval(timer); timer = null; }
+  if (playing) {
+    timer = setInterval(() => {
+      currentFrame = (currentFrame + 1) % M.frames.length;
+      updateFrame();
+    }, +speedSel.value);
+  }
+}
+playBtn.onclick = () => setPlaying(!playing);
+speedSel.onchange = () => { if (playing) setPlaying(true); };
+
+// keyboard: space = play/pause, arrows = step
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.code === "Space") { e.preventDefault(); setPlaying(!playing); }
+  else if (e.code === "ArrowLeft") { currentFrame = Math.max(0, currentFrame - 1); updateFrame(); }
+  else if (e.code === "ArrowRight") { currentFrame = Math.min(M.frames.length - 1, currentFrame + 1); updateFrame(); }
+});
+
+// ---- map ready: add forecast overlay ---------------------------------
+// Surface any MapLibre errors (e.g. image load failures) to the console
+// so silent failures become visible.
+map.on("error", e => {
+  console.warn("[MapLibre error]", e.error && e.error.message ? e.error.message : e);
+});
+
+map.on("load", () => {
+  const initUrl = frameUrl(currentBand, currentFrame);
+  console.log("[FE] image source coords:", JSON.stringify(M.coordinates));
+  console.log("[FE] initial image url:", initUrl);
+
+  map.addSource(SOURCE_ID, {
+    type: "image",
+    url: initUrl,
+    coordinates: M.coordinates,
+  });
+  map.addLayer({
+    id: LAYER_ID,
+    source: SOURCE_ID,
+    type: "raster",
+    paint: {
+      "raster-opacity": +opSlider.value / 100,
+      "raster-fade-duration": 0,   // no flash when swapping frames
+    },
+  });
+
+  // log when the source image actually loads (or errors)
+  const src = map.getSource(SOURCE_ID);
+  if (src) {
+    src.on("error", err => console.error("[FE] image source ERROR:", err));
+    src.on("data", e => {
+      if (e.sourceDataType === "content")
+        console.log("[FE] image source loaded OK");
+    });
+  }
+
+  // fit to the forecast bounds (clamped to Mercator for fitBounds too)
+  const [lonMin, latMin, lonMax, latMax] = M.bounds;
+  map.fitBounds([[lonMin, Math.max(latMin, -85.05)],
+                 [lonMax, Math.min(latMax, 85.05)]], { duration: 600 });
+
+  selectBand(currentBand);   // renders legend + ensures overlay shown
+  document.getElementById("loading").style.display = "none";
+  console.log("[FE] overlay layer added:", LAYER_ID,
+              "present:", !!map.getLayer(LAYER_ID));
+});
+
+// ---- MapTiler live weather layers (optional, on demand) --------------
+const weatherEl = document.getElementById("weather");
+const weatherLayers = [
+  { id: "radar",  label: "Radar",        cls: "RadarLayer" },
+  { id: "precip", label: "Precipitation", cls: "PrecipitationLayer" },
+  { id: "temp",   label: "Temperature",   cls: "TemperatureLayer" }
+];
+const weatherState = {};   // id -> { layer, ok }
+
+weatherLayers.forEach(w => {
+  const btn = document.createElement("button");
+  btn.textContent = w.label;
+  btn.onclick = () => toggleWeather(w, btn);
+  weatherEl.appendChild(btn);
+});
+
+let weatherModule = null;
+async function loadWeatherModule() {
+  if (weatherModule) return weatherModule;
+  weatherModule = await import(
+    "https://esm.sh/@maptiler/weather@3.1.1");
+  return weatherModule;
+}
+
+async function toggleWeather(w, btn) {
+  if (!apiKey) { alert("Add your MapTiler API key first."); return; }
+  if (weatherState[w.id]) {
+    try { map.removeLayer(weatherState[w.id].layer.id); } catch (e) {}
+    delete weatherState[w.id];
+    btn.classList.remove("active");
+    return;
+  }
+  btn.classList.add("active");
+  try {
+    const mod = await loadWeatherModule();
+    const Cls = mod[w.cls];
+    if (!Cls) throw new Error(`${w.cls} not found in @maptiler/weather`);
+    const layer = new Cls({ opacity: 0.65 });
+    layer.id = layer.id || ("mt-" + w.id);
+    map.addLayer(layer);
+    if (typeof layer.animateByFactor === "function")
+      layer.animateByFactor(3600);   // 1s = 1h, like the SDK examples
+    weatherState[w.id] = { layer, ok: true };
+  } catch (e) {
+    console.error(e);
+    alert("Could not load MapTiler " + w.label + " layer:\n" + e.message);
+    btn.classList.remove("active");
+  }
+}
+
+// ---- helpers ---------------------------------------------------------
+function showBanner(msg) {
+  const b = document.getElementById("banner");
+  b.textContent = msg;
+  b.style.display = "block";
+}
+</script>
+</body>
+</html>
