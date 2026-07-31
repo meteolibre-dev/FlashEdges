@@ -357,6 +357,7 @@ class FlashEdgesInferenceEngine:
         c_sat: int = NUM_SAT_CHANNELS,
         c_metar: int = NUM_METAR_CHANNELS,
         sat_nodata_mask: Optional[torch.Tensor] = None,
+        metar_station_mask: Optional[torch.Tensor] = None,
     ) -> Generator[Tuple[torch.Tensor, torch.Tensor], None, None]:
         """Run tiled diffusion inference with autoregressive rollout.
 
@@ -370,6 +371,14 @@ class FlashEdgesInferenceEngine:
             c_metar: Number of METAR channels (7).
             sat_nodata_mask: (1, c_sat, T_ctx, H, W) boolean, True where sat
                 is no-data. Used to blank those pixels in the output.
+            metar_station_mask: (1, 1, 1, H, W) boolean, True where a METAR
+                station reported in the initial context (union across frames &
+                channels). METAR is sparse by nature; the model was trained with
+                non-station pixels zeroed. This mask is re-applied to the METAR
+                channels of the predicted frame *before* it is fed back as the
+                autoregressive context for the next step, so the rollout sees
+                the same sparse station distribution it trained on. The yielded /
+                written forecast stays dense (only the feedback is re-sparsified).
 
         Yields:
             (sat_batch_cpu, metar_batch_cpu) after each autoregressive step,
@@ -611,12 +620,29 @@ class FlashEdgesInferenceEngine:
 
             yield sat_denorm.cpu(), metar_denorm.cpu()
 
+            # Re-sparsify METAR for the autoregressive context feedback.
+            # The model was trained with non-station METAR pixels zeroed; feeding
+            # back the dense (hallucinated) prediction would put the rollout on
+            # a context distribution it never saw. Zero non-station pixels in
+            # the predicted METAR channels *only* for context feedback -- the
+            # yielded/written forecast above stays dense.
+            if metar_station_mask is not None:
+                metar_pred = x_t[:, c_sat:]
+                metar_pred = torch.where(
+                    metar_station_mask.expand_as(metar_pred),
+                    metar_pred,
+                    torch.zeros_like(metar_pred),
+                )
+                x_t_for_ctx = torch.cat([x_t[:, :c_sat], metar_pred], dim=1)
+            else:
+                x_t_for_ctx = x_t
+
             # Update context: drop oldest frames, append generated frames
             if this_nb >= T_ctx:
-                new_context = x_t[:, :, -T_ctx:, :, :].clone()
+                new_context = x_t_for_ctx[:, :, -T_ctx:, :, :].clone()
             else:
                 tail = current_context[:, :, this_nb:, :, :]
-                new_context = torch.cat([tail, x_t[:, :, :this_nb, :, :]], dim=2)
+                new_context = torch.cat([tail, x_t_for_ctx[:, :, :this_nb, :, :]], dim=2)
             del current_context
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -821,6 +847,13 @@ class FlashEdgesInferenceEngine:
                 metar_valid, metar_tensor, torch.zeros_like(metar_tensor)
             )
 
+            # Static station-presence mask for the autoregressive rollout:
+            # a pixel counts as a station if ANY context frame / channel
+            # reported there. METAR stations don't move on hourly scales, so
+            # this is reused at every AR step to re-sparsify the feedback.
+            # Shape (1, 1, 1, H, W) -> broadcasts over c_metar & time.
+            metar_station_mask = metar_valid.any(dim=1, keepdim=True).any(dim=2, keepdim=True)
+
             current_context = torch.cat([sat_tensor, metar_tensor], dim=1)
 
             # --- Geo transform for output TIFFs ---
@@ -843,6 +876,7 @@ class FlashEdgesInferenceEngine:
                     c_sat=c_sat,
                     c_metar=c_metar,
                     sat_nodata_mask=sat_nodata_mask,
+                    metar_station_mask=metar_station_mask,
                 ):
                     batch_nb = sat_batch.shape[2]
                     for k in range(batch_nb):
