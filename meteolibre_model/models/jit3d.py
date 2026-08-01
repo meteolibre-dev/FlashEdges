@@ -278,8 +278,8 @@ class JiT3D_Modern(nn.Module):
         # kv_ctx_noise: max hyperspherical KV-noise angle (rad) on context tokens.
         # block_causal: bidirectional within a frame, causal across frames.
         # prefix_attn: prefix-LLM-style causal mask over context/forecast tokens.
-        kv_ctx_noise: float = 0.3,
-        block_causal: bool = True,
+        kv_ctx_noise: float = 0.,
+        block_causal: bool = False,
         prefix_attn: bool = False,
     ):
         super().__init__()
