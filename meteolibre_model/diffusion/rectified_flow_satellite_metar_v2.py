@@ -420,7 +420,7 @@ def trainer_step(
     # ── Diagnostics ──────────────────────────────────────────────────────
     # Per-channel losses for the *winning* candidates (gather along K axis).
     sat_per_chan_kb = sat_per_chan_ps.view(K, b, c_sat)       # (K, B, c_sat)
-    metar_per_chan_kb = metar_per_chan_ps.view(K, b, c_met)   # (K, B, c_met)
+    metar_per_chan_kb = metar_per_chan_ps.view(K, b, c_metar)   # (K, B, c_metar)
     sat_per_chan_diag = sat_per_chan_kb[winner_idx, arange_b].mean(dim=0)
     metar_per_chan_diag = metar_per_chan_kb[winner_idx, arange_b].mean(dim=0)
 
