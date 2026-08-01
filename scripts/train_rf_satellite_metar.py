@@ -36,7 +36,7 @@ sys.path.insert(0, project_root)
 
 from meteolibre_model.dataset.dataset_global_satellite_metar import FlashEdgesGlobalDataset
 from meteolibre_model.dataset.dataset_global_satellite_metar import METAR_FEATURES
-from meteolibre_model.diffusion.rectified_flow_satellite_metar_v1 import (
+from meteolibre_model.diffusion.rectified_flow_satellite_metar_v2 import (
     trainer_step,
     full_image_generation,
 )
@@ -320,7 +320,7 @@ def main():
         print(f"[resume] loaded weights from {model_path}", flush=True)
     else:
         print(f"[resume] no checkpoint at {model_path}; starting fresh", flush=True)
-    
+
     print("start compiling")
     model = torch.compile(model)
     print("end compiling")

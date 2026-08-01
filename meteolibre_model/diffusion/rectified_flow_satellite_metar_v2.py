@@ -157,7 +157,7 @@ def trainer_step(
     noise_rho=0.0,
     temporal_weight_scale=1.0,
     grad_weight=0.1,
-    temporal_grad_weight=0.1,
+    temporal_grad_weight=0.,
     # ── Forward XM parameters ────────────────────────────────────────────
     xm_k=2,
     xm_mix=1.0,
