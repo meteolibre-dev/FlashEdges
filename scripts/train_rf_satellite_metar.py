@@ -36,7 +36,7 @@ sys.path.insert(0, project_root)
 
 from meteolibre_model.dataset.dataset_global_satellite_metar import FlashEdgesGlobalDataset
 from meteolibre_model.dataset.dataset_global_satellite_metar import METAR_FEATURES
-from meteolibre_model.diffusion.rectified_flow_satellite_metar_v2 import (
+from meteolibre_model.diffusion.rectified_flow_satellite_metar_v1 import (
     trainer_step,
     full_image_generation,
 )
@@ -496,7 +496,11 @@ def main():
                 accelerator.print(f"Model saved to {save_path}")
                 accelerator.print(f"Optimizer state saved to {MODEL_DIR}checkpoint_optimizer.pt")
 
+
         accelerator.wait_for_everyone()
+
+        # exit after each fullepoch iteration to avoid consumming useless gpu hour
+        exit()
 
     accelerator.end_training()
     print("Training complete.")
