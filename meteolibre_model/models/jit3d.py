@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+from meteolibre_model.models.convgru import ConvGRUHead
+
 # ==============================================================================
 # == 1. Modern Components (RMSNorm, SwiGLU, RoPE)
 # ==============================================================================
@@ -281,6 +283,18 @@ class JiT3D_Modern(nn.Module):
         kv_ctx_noise: float = 0.,
         block_causal: bool = False,
         prefix_attn: bool = False,
+        # --- ConvGRU KPI head (replaces the gated-persistence path) ---
+        # When the kpi branch has a raw-METAR skip (kpi_in_channels > 0), the
+        # decoder is a ConvGRU refinement head (see convgru.py) instead of a
+        # plain FinalLayer + 1x1 persistence blend. The head unrolls a conv
+        # recurrent net over the temporal axis at full resolution, propagating
+        # sparse station anchors spatially and carrying temporal continuity --
+        # the two things the old 1x1 persistence path could not do. The scalar
+        # context (sun + lat + diffusion t) is injected as a per-frame hidden
+        # bias to drive the diurnal curve. Requires fine-tuning (random init).
+        kpi_head_hidden_dim: int = 64,
+        kpi_head_kernel: int = 3,
+        kpi_head_layers: int = 2,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -343,67 +357,56 @@ class JiT3D_Modern(nn.Module):
         self.dual_head = sat_out_channels is not None and kpi_out_channels is not None
         if self.dual_head:
             self.final_layer_sat = FinalLayer(patch_size, sat_out_channels, embed_dim)
-            self.final_layer_kpi = FinalLayer(patch_size, kpi_out_channels, embed_dim)
+            # KPI branch: ConvGRU refinement head when raw METAR is available;
+            # otherwise fall back to a plain FinalLayer (single-head-style).
+            self.use_metar_ref = (
+                kpi_in_channels is not None and kpi_in_channels > 0
+            )
+            if self.use_metar_ref:
+                self.kpi_head = ConvGRUHead(
+                    patch_size=patch_size,
+                    kpi_out_channels=kpi_out_channels,
+                    kpi_in_channels=kpi_in_channels,
+                    embed_dim=embed_dim,
+                    hidden_dim=kpi_head_hidden_dim,
+                    scalar_dim=context_dim,
+                    kernel_size=kpi_head_kernel,
+                    num_layers=kpi_head_layers,
+                )
+            else:
+                self.final_layer_kpi = FinalLayer(patch_size, kpi_out_channels, embed_dim)
         else:
             self.final_layer = FinalLayer(patch_size, out_channels, embed_dim)
+            self.use_metar_ref = False
 
-        # ── METAR-only persistence path (gated blend) ─────────────────────────
-        # A dedicated, trunk-bypassing path for the raw previous-step METAR
-        # values at the SAME spatial/temporal positions. Sparse station
-        # observations are heavily diluted after patchify + 12 attention
-        # blocks, so the metar branch gets its own high-bandwidth local
-        # persistence path ("next value ~= last value + correction"). The sat
-        # branch is completely untouched.
-        #
-        # Instead of a plain additive bias, we use a per-channel *gated
-        # blend* between the trunk forecast and the persistence estimate:
-        #
-        #     persistence = persist_proj(metar_ref)
-        #     gate        = sigmoid(gate_proj(metar_ref))   in [0, 1]
-        #     kpi_out     = gate * persistence + (1 - gate) * kpi_out
-        #
-        # This is strictly more expressive than addition: the gate can kill
-        # the trunk forecast where persistence should dominate (e.g. isolated
-        # stations with strong local autocorrelation), or suppress persistence
-        # where the trunk is confident. It is also tiny (two 1x1 Conv3d) and
-        # stays in ``modules_to_save`` for PEFT.
-        #
-        # Init: ``persist_proj`` keeps its default init (sensible linear map of
-        # the last frame as a starting persistence estimate). ``gate_proj`` is
-        # zero-weighted with a strongly *negative* bias so sigmoid(bias) ~ 0
-        # at start -> the head starts as the pure trunk forecast (identical to
-        # the no-skip version), and learns to route persistence in gradually.
-        # This is important for stable PEFT fine-tuning on top of a sat-only
-        # checkpoint.
-        self.use_metar_ref = (
-            self.dual_head and kpi_in_channels is not None and kpi_in_channels > 0
-        )
-        if self.use_metar_ref:
-            self.persist_proj = nn.Conv3d(
-                kpi_in_channels, kpi_out_channels, kernel_size=1
-            )
-            self.gate_proj = nn.Conv3d(
-                kpi_in_channels, kpi_out_channels, kernel_size=1
-            )
+        # ── KPI head (ConvGRU) ──────────────────────────────────────────────
+        # The old gated-persistence path (persist_proj / gate_proj, a 1x1 Conv3d
+        # "last value + correction" blend) is replaced by the ConvGRU head
+        # above. The ConvGRU unrolls over the temporal axis at full resolution,
+        # so its conv gates give each step a spatial receptive field: station
+        # values propagate into their neighbourhood guided by the local trunk
+        # texture (the spatial propagation the 1x1 path could not do), and the
+        # recurrent hidden state carries temporal continuity (attacking the AR
+        # batch-boundary discontinuity when state is persisted across batches /\        # the model is trained with short rollouts). The scalar context (sun +
+        # lat + diffusion t) is injected as an additive hidden-state bias at
+        # every frame, giving the head a time-of-day signal to drive the
+        # diurnal curve even when raw METAR context is all zeros at non-station
+        # pixels. Requires fine-tuning: the head is randomly initialized.
 
         # When True, the shared trunk representation is detached before
         # entering the METAR (kpi) head. This blocks the metar loss gradient
         # from reaching the core DiT blocks, so the trunk is trained ONLY by
         # the (dense, reliable) satellite loss while the metar branch keeps
-        # its dedicated head + persistence path. Equivalent in spirit to a
-        # low-rank constraint on the metar->trunk gradient, but without any
-        # PEFT machinery. Defaults to False (standard joint training).
+        # its dedicated ConvGRU head. Equivalent in spirit to a low-rank
+        # constraint on the metar->trunk gradient, but without any PEFT
+        # machinery. Defaults to False (standard joint training).
         self.isolate_metar_grad = False
 
         self.initialize_weights()
 
-        # Gated-blend init applied AFTER initialize_weights() (which would
-        # otherwise override it with trunc_normal). gate_proj -> zero weights
-        # + large negative bias so the gate starts ~closed (pure trunk);
-        # persist_proj keeps its learned/default init as the persistence prior.
-        if self.use_metar_ref:
-            nn.init.zeros_(self.gate_proj.weight)
-            nn.init.constant_(self.gate_proj.bias, -6.0)
+        # NOTE: the old gated-blend gate_proj zero/negative-bias init is gone --
+        # the ConvGRU head is randomly initialized and learns from scratch
+        # (fine-tuning required).
 
     def initialize_weights(self):
         self.apply(self._init_weights)
@@ -468,11 +471,21 @@ class JiT3D_Modern(nn.Module):
             # still gets full gradients to the trunk. No-op when the flag is
             # off (standard joint training).
             kpi_in = x.detach() if self.isolate_metar_grad else x
-            kpi_out = self.final_layer_kpi(kpi_in, T, H, W)
-            if self.use_metar_ref and metar_ref is not None:
-                persistence = self.persist_proj(metar_ref)
-                gate = torch.sigmoid(self.gate_proj(metar_ref))
-                kpi_out = gate * persistence + (1.0 - gate) * kpi_out
+            if self.use_metar_ref:
+                # ConvGRU refinement head: unpatchify the trunk tokens into a
+                # per-frame KPI estimate, then unroll a conv recurrent net over
+                # T with the raw METAR (metar_ref) + the scalar context (t) as
+                # inputs. The scalar carries the sun position / lat / diffusion
+                # timestep; raw METAR provides the sparse station anchors that
+                # the conv gates propagate spatially. Returns the refined KPI
+                # forecast and the final hidden states (the latter can be
+                # carried across AR batches / denoising steps -- not yet wired
+                # in the inference engine).
+                kpi_out, _ = self.kpi_head(
+                    kpi_in, T, H, W, raw_kpi=metar_ref, scalar=t,
+                )
+            else:
+                kpi_out = self.final_layer_kpi(kpi_in, T, H, W)
             return sat_out, kpi_out
         return self.final_layer(x, T, H, W)
 

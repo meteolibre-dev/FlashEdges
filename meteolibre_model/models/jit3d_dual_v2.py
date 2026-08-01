@@ -25,6 +25,10 @@ class DualJiT3D(nn.Module):
         context_dim=128,
         time_emb_dim=64,
         context_frames = 4,
+        # --- ConvGRU KPI head (passed through to JiT3D_Modern) ---
+        kpi_head_hidden_dim: int = 64,
+        kpi_head_kernel: int = 3,
+        kpi_head_layers: int = 2,
     ):
         super().__init__()
         self.sat_out_channels = sat_out_channels
@@ -42,6 +46,9 @@ class DualJiT3D(nn.Module):
             num_heads=num_heads,
             context_dim=context_dim,
             time_emb_dim=time_emb_dim,
+            kpi_head_hidden_dim=kpi_head_hidden_dim,
+            kpi_head_kernel=kpi_head_kernel,
+            kpi_head_layers=kpi_head_layers,
         )
 
     def forward(
@@ -53,10 +60,10 @@ class DualJiT3D(nn.Module):
     ):
         """sat_input + kpi_input go to the shared trunk as before.
 
-        ``metar_ref`` is the SAME-position previous-step METAR tensor fed
-        directly to the metar (kpi) head as an additive persistence skip
-        (see JiT3D_Modern.persist_proj / gate_proj). By default it is the metar
-        channels of the input itself (kpi_input); pass None to disable.
+        ``metar_ref`` is the SAME-position raw METAR tensor fed directly to the
+        metar (kpi) head's ConvGRU refinement path (see
+        JiT3D_Modern.kpi_head / convgru.py). By default it is the metar channels
+        of the input itself (kpi_input); pass None to disable.
         """
         combined_input = torch.cat([kpi_input, sat_input], dim=1)
         # JiT3D_Modern returns (sat_pred, kpi_pred) directly via its two split
