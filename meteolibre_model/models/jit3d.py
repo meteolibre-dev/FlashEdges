@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-from meteolibre_model.models.convgru import ConvGRUHead
 
 # ==============================================================================
 # == 1. Modern Components (RMSNorm, SwiGLU, RoPE)
@@ -363,6 +362,7 @@ class JiT3D_Modern(nn.Module):
                 kpi_in_channels is not None and kpi_in_channels > 0
             )
             if self.use_metar_ref:
+                from meteolibre_model.models.convgru import ConvGRUHead
                 self.kpi_head = ConvGRUHead(
                     patch_size=patch_size,
                     kpi_out_channels=kpi_out_channels,
