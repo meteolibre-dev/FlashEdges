@@ -101,8 +101,8 @@ def _per_sample_sat_loss(x_sat_pred, x0_sat, sat_mask, weight, sat_lw):
     """
     sat_diff = weight * (x_sat_pred - x0_sat) ** 2          # (B, c, T, H, W)
     sat_m = sat_mask.float()
-    sat_cnt = sat_m.sum(dim=(1, 2, 3, 4)).clamp(min=1.0)     # (B,)
-    per_chan = (sat_diff * sat_m).sum(dim=(1, 2, 3, 4)) / sat_cnt.unsqueeze(1)  # (B, c)
+    sat_cnt = sat_m.sum(dim=(2, 3, 4)).clamp(min=1.0)        # (B, c)
+    per_chan = (sat_diff * sat_m).sum(dim=(2, 3, 4)) / sat_cnt  # (B, c)
     per_sample = (per_chan * sat_lw).mean(dim=1)             # (B,)
     return per_sample, per_chan
 
@@ -111,8 +111,8 @@ def _per_sample_metar_loss(x_metar_pred, x0_metar, metar_mask, weight, metar_lw)
     """Per-sample, channel-weighted METAR reconstruction loss (masked)."""
     metar_diff = weight * (x_metar_pred - x0_metar) ** 2
     met_m = metar_mask.float()
-    met_cnt = met_m.sum(dim=(1, 2, 3, 4)).clamp(min=1.0)
-    per_chan = (metar_diff * met_m).sum(dim=(1, 2, 3, 4)) / met_cnt.unsqueeze(1)  # (B, c)
+    met_cnt = met_m.sum(dim=(2, 3, 4)).clamp(min=1.0)        # (B, c)
+    per_chan = (metar_diff * met_m).sum(dim=(2, 3, 4)) / met_cnt  # (B, c)
     per_sample = (per_chan * metar_lw).mean(dim=1)          # (B,)
     return per_sample, per_chan
 
