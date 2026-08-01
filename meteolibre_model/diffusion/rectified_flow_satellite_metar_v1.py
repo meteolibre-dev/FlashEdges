@@ -271,7 +271,7 @@ def trainer_step(
     metar_drop_frac=0.05,
     noise_rho=0.0,
     temporal_weight_scale=1.0,
-    grad_weight=0.1,
+    grad_weight=0.,
     temporal_grad_weight=0.,
 ):
     """One flow-matching training step with x-prediction.
