@@ -361,6 +361,8 @@ def main():
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
+        total_loss_sat = 0.0
+        total_loss_metar = 0.0
         n_steps_epoch = 0
 
         # For streaming datasets there is no length; cap the epoch at
@@ -416,6 +418,8 @@ def main():
                         )
 
                 total_loss += loss.item()
+                total_loss_sat += loss_sat.item()
+                total_loss_metar += loss_metar.item()
                 progress_bar.set_postfix(
                     loss=f"{loss.item():.4f}",
                     sat=f"{loss_sat.item():.4f}",
@@ -426,8 +430,15 @@ def main():
                 break
 
         avg_loss = total_loss / max(n_steps_epoch, 1)
+        avg_loss_sat = total_loss_sat / max(n_steps_epoch, 1)
+        avg_loss_metar = total_loss_metar / max(n_steps_epoch, 1)
         accelerator.log({"Loss/train_epoch": avg_loss}, step=epoch)
-        print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {avg_loss:.4f}")
+        accelerator.log({"Loss_sat/train_epoch": avg_loss_sat}, step=epoch)
+        accelerator.log({"Loss_metar/train_epoch": avg_loss_metar}, step=epoch)
+        print(
+            f"Epoch {epoch + 1}/{num_epochs}, "
+            f"Loss: {avg_loss:.4f} (sat: {avg_loss_sat:.4f}, metar: {avg_loss_metar:.4f})"
+        )
 
         # --- Visualization (main process only) ---
         if accelerator.is_main_process:
