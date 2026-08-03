@@ -308,7 +308,9 @@ def trainer_step(
             structured_gaussian_noise(x0.shape, x0.device, x0.dtype, rho=noise_rho)
             for _ in range(K)
         ]
-        x1 = torch.stack(noise_list, dim=0).reshape(K * b, *x0.shape[1:])  # (K*B, C, T, H, W)
+        # Stack as (B, K, ...) before flattening, matching repeat_interleave:
+        # [z_s0_c0, z_s0_c1, ..., z_s1_c0, z_s1_c1, ...].
+        x1 = torch.stack(noise_list, dim=1).reshape(K * b, *x0.shape[1:])  # (K*B, C, T, H, W)
 
     # ── Build x_t for all K candidates ───────────────────────────────────
     xt = get_x_t_rf(
