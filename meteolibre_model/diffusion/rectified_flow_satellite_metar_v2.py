@@ -395,8 +395,12 @@ def trainer_step(
     # We select the winner by sat_loss, but backpropagate the **full** loss
     # (sat + metar + regs) through the winner — so all branches still receive
     # gradient for the selected candidate.
-    sat_loss_kb = sat_loss_ps.view(K, b)                   # (K, B)
-    total_kb = total_ps.view(K, b)                         # (K, B)
+    # NOTE: tiling uses repeat_interleave, so the flat (K*B,) layout is
+    # [s0c0, s0c1, ..., s0cK-1, s1c0, ...].  We must reshape to (B, K) first
+    # and transpose to (K, B) so element (k, i) is candidate k of sample i.
+    # A plain .view(K, b) would scramble the K and B axes.
+    sat_loss_kb = sat_loss_ps.view(b, K).t()               # (K, B)
+    total_kb = total_ps.view(b, K).t()                     # (K, B)
     arange_b = torch.arange(b, device=device)
 
     if K == 1:
@@ -419,8 +423,8 @@ def trainer_step(
 
     # ── Diagnostics ──────────────────────────────────────────────────────
     # Per-channel losses for the *winning* candidates (gather along K axis).
-    sat_per_chan_kb = sat_per_chan_ps.view(K, b, c_sat)       # (K, B, c_sat)
-    metar_per_chan_kb = metar_per_chan_ps.view(K, b, c_metar)   # (K, B, c_metar)
+    sat_per_chan_kb = sat_per_chan_ps.view(b, K, c_sat).permute(1, 0, 2)       # (K, B, c_sat)
+    metar_per_chan_kb = metar_per_chan_ps.view(b, K, c_metar).permute(1, 0, 2)   # (K, B, c_metar)
     sat_per_chan_diag = sat_per_chan_kb[winner_idx, arange_b].mean(dim=0)
     metar_per_chan_diag = metar_per_chan_kb[winner_idx, arange_b].mean(dim=0)
 
@@ -435,15 +439,15 @@ def trainer_step(
 
     # Report loss_sat / loss_metar as the winning candidates' values (what
     # the model is actually trained on), averaged over the batch.
-    metar_loss_kb = metar_loss_ps.view(K, b)
+    metar_loss_kb = metar_loss_ps.view(b, K).t()            # (K, B)
     loss_sat = sat_loss_kb[winner_idx, arange_b].mean()
     loss_metar = metar_loss_kb[winner_idx, arange_b].mean()
 
     components = {
         "sat_per_chan": sat_per_chan_diag.detach(),
         "metar_per_chan": metar_per_chan_diag.detach(),
-        "loss_grad_sat": grad_loss_ps.view(K, b)[winner_idx, arange_b].mean().detach(),
-        "loss_tgrad_sat": tgrad_loss_ps.view(K, b)[winner_idx, arange_b].mean().detach(),
+        "loss_grad_sat": grad_loss_ps.view(b, K).t()[winner_idx, arange_b].mean().detach(),
+        "loss_tgrad_sat": tgrad_loss_ps.view(b, K).t()[winner_idx, arange_b].mean().detach(),
         "xm_winner_rate": xm_winner_rate,
         "xm_loss_reduction": xm_loss_reduction.detach(),
     }
