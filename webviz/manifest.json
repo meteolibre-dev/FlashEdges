@@ -25,6 +25,122 @@
   ],
   "bands": [
     {
+      "key": "gmgsi_lwir",
+      "display": "GMGSI LWIR (IR)",
+      "unit": "",
+      "vmin": 0.0,
+      "vmax": 194.63540771484372,
+      "alpha_mode": "mask",
+      "gradient": [
+        [
+          0.0,
+          "rgb(7,0,45)"
+        ],
+        [
+          0.091,
+          "rgb(4,23,88)"
+        ],
+        [
+          0.182,
+          "rgb(0,46,131)"
+        ],
+        [
+          0.273,
+          "rgb(0,84,140)"
+        ],
+        [
+          0.364,
+          "rgb(0,124,140)"
+        ],
+        [
+          0.455,
+          "rgb(9,158,107)"
+        ],
+        [
+          0.545,
+          "rgb(24,189,53)"
+        ],
+        [
+          0.636,
+          "rgb(134,204,31)"
+        ],
+        [
+          0.727,
+          "rgb(242,212,12)"
+        ],
+        [
+          0.818,
+          "rgb(242,137,4)"
+        ],
+        [
+          0.909,
+          "rgb(235,67,3)"
+        ],
+        [
+          1.0,
+          "rgb(216,0,12)"
+        ]
+      ]
+    },
+    {
+      "key": "gmgsi_vis",
+      "display": "GMGSI VIS",
+      "unit": "",
+      "vmin": -0.13074874877929688,
+      "vmax": 147.9963836669922,
+      "alpha_mode": "mask",
+      "gradient": [
+        [
+          0.0,
+          "rgb(0,0,0)"
+        ],
+        [
+          0.091,
+          "rgb(14,14,14)"
+        ],
+        [
+          0.182,
+          "rgb(29,29,29)"
+        ],
+        [
+          0.273,
+          "rgb(44,44,44)"
+        ],
+        [
+          0.364,
+          "rgb(59,59,59)"
+        ],
+        [
+          0.455,
+          "rgb(73,73,73)"
+        ],
+        [
+          0.545,
+          "rgb(88,88,88)"
+        ],
+        [
+          0.636,
+          "rgb(125,125,125)"
+        ],
+        [
+          0.727,
+          "rgb(163,163,163)"
+        ],
+        [
+          0.818,
+          "rgb(203,203,203)"
+        ],
+        [
+          0.909,
+          "rgb(232,232,232)"
+        ],
+        [
+          1.0,
+          "rgb(255,255,255)"
+        ]
+      ]
+    },
+    {
       "key": "tmpc",
       "display": "2m Temperature",
       "unit": "C",
@@ -83,60 +199,118 @@
       ]
     },
     {
-      "key": "p01m",
-      "display": "Precipitation",
-      "unit": "dBZ",
-      "vmin": 0,
-      "vmax": 65,
-      "alpha_mode": "threshold",
+      "key": "dwpc",
+      "display": "2m Dewpoint",
+      "unit": "C",
+      "vmin": -40,
+      "vmax": 35,
+      "alpha_mode": "mask",
       "gradient": [
         [
           0.0,
-          "rgb(0,237,237)"
+          "rgb(255,255,217)"
         ],
         [
           0.091,
-          "rgb(0,199,111)"
+          "rgb(242,249,188)"
         ],
         [
           0.182,
-          "rgb(0,171,0)"
+          "rgb(220,241,178)"
         ],
         [
           0.273,
-          "rgb(0,220,0)"
+          "rgb(184,227,181)"
         ],
         [
           0.364,
-          "rgb(39,255,0)"
+          "rgb(132,207,186)"
         ],
         [
           0.455,
-          "rgb(183,255,0)"
+          "rgb(87,190,192)"
         ],
         [
           0.545,
-          "rgb(255,226,0)"
+          "rgb(52,168,194)"
         ],
         [
           0.636,
-          "rgb(255,168,0)"
+          "rgb(29,140,190)"
         ],
         [
           0.727,
-          "rgb(255,77,0)"
+          "rgb(33,104,172)"
         ],
         [
           0.818,
-          "rgb(247,0,17)"
+          "rgb(35,70,156)"
         ],
         [
           0.909,
-          "rgb(212,0,98)"
+          "rgb(28,45,131)"
         ],
         [
           1.0,
-          "rgb(178,0,178)"
+          "rgb(8,29,88)"
+        ]
+      ]
+    },
+    {
+      "key": "mslp",
+      "display": "MSLP",
+      "unit": "hPa",
+      "vmin": 970,
+      "vmax": 1050,
+      "alpha_mode": "mask",
+      "gradient": [
+        [
+          0.0,
+          "rgb(51,89,191)"
+        ],
+        [
+          0.091,
+          "rgb(83,114,198)"
+        ],
+        [
+          0.182,
+          "rgb(115,139,205)"
+        ],
+        [
+          0.273,
+          "rgb(149,166,212)"
+        ],
+        [
+          0.364,
+          "rgb(181,191,219)"
+        ],
+        [
+          0.455,
+          "rgb(213,216,226)"
+        ],
+        [
+          0.545,
+          "rgb(224,211,211)"
+        ],
+        [
+          0.636,
+          "rgb(215,175,175)"
+        ],
+        [
+          0.727,
+          "rgb(206,139,139)"
+        ],
+        [
+          0.818,
+          "rgb(196,102,102)"
+        ],
+        [
+          0.909,
+          "rgb(187,66,66)"
+        ],
+        [
+          1.0,
+          "rgb(178,30,30)"
         ]
       ]
     },
@@ -199,65 +373,65 @@
       ]
     },
     {
-      "key": "gmgsi_lwir",
-      "display": "GMGSI LWIR (IR)",
-      "unit": "",
-      "vmin": 0.0,
-      "vmax": 198.61680725097654,
-      "alpha_mode": "mask",
+      "key": "p01m",
+      "display": "Precipitation",
+      "unit": "dBZ",
+      "vmin": 0,
+      "vmax": 65,
+      "alpha_mode": "threshold",
       "gradient": [
         [
           0.0,
-          "rgb(7,0,45)"
+          "rgb(0,237,237)"
         ],
         [
           0.091,
-          "rgb(4,23,88)"
+          "rgb(0,199,111)"
         ],
         [
           0.182,
-          "rgb(0,46,131)"
+          "rgb(0,171,0)"
         ],
         [
           0.273,
-          "rgb(0,84,140)"
+          "rgb(0,220,0)"
         ],
         [
           0.364,
-          "rgb(0,124,140)"
+          "rgb(39,255,0)"
         ],
         [
           0.455,
-          "rgb(9,158,107)"
+          "rgb(183,255,0)"
         ],
         [
           0.545,
-          "rgb(24,189,53)"
+          "rgb(255,226,0)"
         ],
         [
           0.636,
-          "rgb(134,204,31)"
+          "rgb(255,168,0)"
         ],
         [
           0.727,
-          "rgb(242,212,12)"
+          "rgb(255,77,0)"
         ],
         [
           0.818,
-          "rgb(242,137,4)"
+          "rgb(247,0,17)"
         ],
         [
           0.909,
-          "rgb(235,67,3)"
+          "rgb(212,0,98)"
         ],
         [
           1.0,
-          "rgb(216,0,12)"
+          "rgb(178,0,178)"
         ]
       ]
     }
   ],
-  "default_band": "tmpc",
+  "default_band": "gmgsi_lwir",
   "frame_interval_hours": 1,
   "frame_count": 18,
   "frames": [
@@ -266,10 +440,13 @@
       "label": "2026-06-28 11:00 UTC",
       "iso": "2026-06-28T11:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281100.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606281100.webp",
         "tmpc": "frames/tmpc_202606281100.webp",
-        "p01m": "frames/p01m_202606281100.webp",
+        "dwpc": "frames/dwpc_202606281100.webp",
+        "mslp": "frames/mslp_202606281100.webp",
         "cloud_cover": "frames/cloud_cover_202606281100.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606281100.webp"
+        "p01m": "frames/p01m_202606281100.webp"
       }
     },
     {
@@ -277,10 +454,13 @@
       "label": "2026-06-28 12:00 UTC",
       "iso": "2026-06-28T12:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281200.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606281200.webp",
         "tmpc": "frames/tmpc_202606281200.webp",
-        "p01m": "frames/p01m_202606281200.webp",
+        "dwpc": "frames/dwpc_202606281200.webp",
+        "mslp": "frames/mslp_202606281200.webp",
         "cloud_cover": "frames/cloud_cover_202606281200.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606281200.webp"
+        "p01m": "frames/p01m_202606281200.webp"
       }
     },
     {
@@ -288,10 +468,13 @@
       "label": "2026-06-28 13:00 UTC",
       "iso": "2026-06-28T13:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281300.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606281300.webp",
         "tmpc": "frames/tmpc_202606281300.webp",
-        "p01m": "frames/p01m_202606281300.webp",
+        "dwpc": "frames/dwpc_202606281300.webp",
+        "mslp": "frames/mslp_202606281300.webp",
         "cloud_cover": "frames/cloud_cover_202606281300.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606281300.webp"
+        "p01m": "frames/p01m_202606281300.webp"
       }
     },
     {
@@ -299,10 +482,13 @@
       "label": "2026-06-28 14:00 UTC",
       "iso": "2026-06-28T14:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281400.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606281400.webp",
         "tmpc": "frames/tmpc_202606281400.webp",
-        "p01m": "frames/p01m_202606281400.webp",
+        "dwpc": "frames/dwpc_202606281400.webp",
+        "mslp": "frames/mslp_202606281400.webp",
         "cloud_cover": "frames/cloud_cover_202606281400.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606281400.webp"
+        "p01m": "frames/p01m_202606281400.webp"
       }
     },
     {
@@ -310,10 +496,13 @@
       "label": "2026-06-28 15:00 UTC",
       "iso": "2026-06-28T15:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281500.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606281500.webp",
         "tmpc": "frames/tmpc_202606281500.webp",
-        "p01m": "frames/p01m_202606281500.webp",
+        "dwpc": "frames/dwpc_202606281500.webp",
+        "mslp": "frames/mslp_202606281500.webp",
         "cloud_cover": "frames/cloud_cover_202606281500.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606281500.webp"
+        "p01m": "frames/p01m_202606281500.webp"
       }
     },
     {
@@ -321,10 +510,13 @@
       "label": "2026-06-28 16:00 UTC",
       "iso": "2026-06-28T16:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281600.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606281600.webp",
         "tmpc": "frames/tmpc_202606281600.webp",
-        "p01m": "frames/p01m_202606281600.webp",
+        "dwpc": "frames/dwpc_202606281600.webp",
+        "mslp": "frames/mslp_202606281600.webp",
         "cloud_cover": "frames/cloud_cover_202606281600.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606281600.webp"
+        "p01m": "frames/p01m_202606281600.webp"
       }
     },
     {
@@ -332,10 +524,13 @@
       "label": "2026-06-28 17:00 UTC",
       "iso": "2026-06-28T17:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281700.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606281700.webp",
         "tmpc": "frames/tmpc_202606281700.webp",
-        "p01m": "frames/p01m_202606281700.webp",
+        "dwpc": "frames/dwpc_202606281700.webp",
+        "mslp": "frames/mslp_202606281700.webp",
         "cloud_cover": "frames/cloud_cover_202606281700.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606281700.webp"
+        "p01m": "frames/p01m_202606281700.webp"
       }
     },
     {
@@ -343,10 +538,13 @@
       "label": "2026-06-28 18:00 UTC",
       "iso": "2026-06-28T18:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281800.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606281800.webp",
         "tmpc": "frames/tmpc_202606281800.webp",
-        "p01m": "frames/p01m_202606281800.webp",
+        "dwpc": "frames/dwpc_202606281800.webp",
+        "mslp": "frames/mslp_202606281800.webp",
         "cloud_cover": "frames/cloud_cover_202606281800.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606281800.webp"
+        "p01m": "frames/p01m_202606281800.webp"
       }
     },
     {
@@ -354,10 +552,13 @@
       "label": "2026-06-28 19:00 UTC",
       "iso": "2026-06-28T19:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606281900.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606281900.webp",
         "tmpc": "frames/tmpc_202606281900.webp",
-        "p01m": "frames/p01m_202606281900.webp",
+        "dwpc": "frames/dwpc_202606281900.webp",
+        "mslp": "frames/mslp_202606281900.webp",
         "cloud_cover": "frames/cloud_cover_202606281900.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606281900.webp"
+        "p01m": "frames/p01m_202606281900.webp"
       }
     },
     {
@@ -365,10 +566,13 @@
       "label": "2026-06-28 20:00 UTC",
       "iso": "2026-06-28T20:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606282000.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606282000.webp",
         "tmpc": "frames/tmpc_202606282000.webp",
-        "p01m": "frames/p01m_202606282000.webp",
+        "dwpc": "frames/dwpc_202606282000.webp",
+        "mslp": "frames/mslp_202606282000.webp",
         "cloud_cover": "frames/cloud_cover_202606282000.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606282000.webp"
+        "p01m": "frames/p01m_202606282000.webp"
       }
     },
     {
@@ -376,10 +580,13 @@
       "label": "2026-06-28 21:00 UTC",
       "iso": "2026-06-28T21:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606282100.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606282100.webp",
         "tmpc": "frames/tmpc_202606282100.webp",
-        "p01m": "frames/p01m_202606282100.webp",
+        "dwpc": "frames/dwpc_202606282100.webp",
+        "mslp": "frames/mslp_202606282100.webp",
         "cloud_cover": "frames/cloud_cover_202606282100.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606282100.webp"
+        "p01m": "frames/p01m_202606282100.webp"
       }
     },
     {
@@ -387,10 +594,13 @@
       "label": "2026-06-28 22:00 UTC",
       "iso": "2026-06-28T22:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606282200.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606282200.webp",
         "tmpc": "frames/tmpc_202606282200.webp",
-        "p01m": "frames/p01m_202606282200.webp",
+        "dwpc": "frames/dwpc_202606282200.webp",
+        "mslp": "frames/mslp_202606282200.webp",
         "cloud_cover": "frames/cloud_cover_202606282200.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606282200.webp"
+        "p01m": "frames/p01m_202606282200.webp"
       }
     },
     {
@@ -398,10 +608,13 @@
       "label": "2026-06-28 23:00 UTC",
       "iso": "2026-06-28T23:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606282300.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606282300.webp",
         "tmpc": "frames/tmpc_202606282300.webp",
-        "p01m": "frames/p01m_202606282300.webp",
+        "dwpc": "frames/dwpc_202606282300.webp",
+        "mslp": "frames/mslp_202606282300.webp",
         "cloud_cover": "frames/cloud_cover_202606282300.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606282300.webp"
+        "p01m": "frames/p01m_202606282300.webp"
       }
     },
     {
@@ -409,10 +622,13 @@
       "label": "2026-06-29 00:00 UTC",
       "iso": "2026-06-29T00:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606290000.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606290000.webp",
         "tmpc": "frames/tmpc_202606290000.webp",
-        "p01m": "frames/p01m_202606290000.webp",
+        "dwpc": "frames/dwpc_202606290000.webp",
+        "mslp": "frames/mslp_202606290000.webp",
         "cloud_cover": "frames/cloud_cover_202606290000.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606290000.webp"
+        "p01m": "frames/p01m_202606290000.webp"
       }
     },
     {
@@ -420,10 +636,13 @@
       "label": "2026-06-29 01:00 UTC",
       "iso": "2026-06-29T01:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606290100.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606290100.webp",
         "tmpc": "frames/tmpc_202606290100.webp",
-        "p01m": "frames/p01m_202606290100.webp",
+        "dwpc": "frames/dwpc_202606290100.webp",
+        "mslp": "frames/mslp_202606290100.webp",
         "cloud_cover": "frames/cloud_cover_202606290100.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606290100.webp"
+        "p01m": "frames/p01m_202606290100.webp"
       }
     },
     {
@@ -431,10 +650,13 @@
       "label": "2026-06-29 02:00 UTC",
       "iso": "2026-06-29T02:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606290200.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606290200.webp",
         "tmpc": "frames/tmpc_202606290200.webp",
-        "p01m": "frames/p01m_202606290200.webp",
+        "dwpc": "frames/dwpc_202606290200.webp",
+        "mslp": "frames/mslp_202606290200.webp",
         "cloud_cover": "frames/cloud_cover_202606290200.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606290200.webp"
+        "p01m": "frames/p01m_202606290200.webp"
       }
     },
     {
@@ -442,10 +664,13 @@
       "label": "2026-06-29 03:00 UTC",
       "iso": "2026-06-29T03:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606290300.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606290300.webp",
         "tmpc": "frames/tmpc_202606290300.webp",
-        "p01m": "frames/p01m_202606290300.webp",
+        "dwpc": "frames/dwpc_202606290300.webp",
+        "mslp": "frames/mslp_202606290300.webp",
         "cloud_cover": "frames/cloud_cover_202606290300.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606290300.webp"
+        "p01m": "frames/p01m_202606290300.webp"
       }
     },
     {
@@ -453,10 +678,13 @@
       "label": "2026-06-29 04:00 UTC",
       "iso": "2026-06-29T04:00:00Z",
       "images": {
+        "gmgsi_lwir": "frames/gmgsi_lwir_202606290400.webp",
+        "gmgsi_vis": "frames/gmgsi_vis_202606290400.webp",
         "tmpc": "frames/tmpc_202606290400.webp",
-        "p01m": "frames/p01m_202606290400.webp",
+        "dwpc": "frames/dwpc_202606290400.webp",
+        "mslp": "frames/mslp_202606290400.webp",
         "cloud_cover": "frames/cloud_cover_202606290400.webp",
-        "gmgsi_lwir": "frames/gmgsi_lwir_202606290400.webp"
+        "p01m": "frames/p01m_202606290400.webp"
       }
     }
   ],

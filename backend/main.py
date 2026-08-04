@@ -69,8 +69,8 @@ def main():
     parser.add_argument(
         "--forecast_steps",
         type=int,
-        default=18,
-        help="Total number of forecast hours to produce (default: 8).",
+        default=24,
+        help="Total number of forecast hours to produce (default: 21).",
     )
     parser.add_argument(
         "--nb_forecast",
