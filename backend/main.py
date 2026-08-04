@@ -122,7 +122,7 @@ def main():
     parser.add_argument(
         "--sde_eps",
         type=float,
-        default=0.1,
+        default=0.,
         help="Global SDE noise scale eps_0 (0.0 recovers the ODE; sweep ~0.05-0.5).",
     )
     parser.add_argument(
