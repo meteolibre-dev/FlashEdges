@@ -312,7 +312,7 @@ class FlashEdgesInferenceEngine:
         return self.sde_eps * t_val * t_val
 
     @staticmethod
-    def _get_gaussian_weights(patch_size: int, device: str, sigma_scale: float = 0.15) -> torch.Tensor:
+    def _get_gaussian_weights(patch_size: int, device: str, sigma_scale: float = 0.3) -> torch.Tensor:
         """2D Gaussian weight mask for smooth patch blending."""
         x = torch.linspace(-(patch_size - 1) / 2, (patch_size - 1) / 2, patch_size, device=device)
         sigma = sigma_scale * patch_size
