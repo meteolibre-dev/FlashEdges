@@ -122,7 +122,7 @@ def main():
     parser.add_argument(
         "--sde_eps",
         type=float,
-        default=0.,
+        default=0.1,
         help="Global SDE noise scale eps_0 (0.0 recovers the ODE; sweep ~0.05-0.5).",
     )
     parser.add_argument(
@@ -135,7 +135,7 @@ def main():
     parser.add_argument(
         "--inference_seed",
         type=int,
-        default=None,
+        default=128,
         help="Optional seed for reproducible sampling noise (prior + SDE innovations).",
     )
     parser.add_argument(

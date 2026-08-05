@@ -64,6 +64,7 @@ from meteolibre_model.diffusion.rectified_flow_satellite_metar_v1 import (
     normalize,
     denormalize,
     CLIP_MIN,
+    METAR_CLIP_MAX,
     structured_gaussian_noise,
     reconstruct_residual,
 )
@@ -620,22 +621,34 @@ class FlashEdgesInferenceEngine:
 
             yield sat_denorm.cpu(), metar_denorm.cpu()
 
-            # Re-sparsify METAR for the autoregressive context feedback.
-            # The model was trained with non-station METAR pixels zeroed; feeding
-            # back the dense (hallucinated) prediction would put the rollout on
-            # a context distribution it never saw. Zero non-station pixels in
-            # the predicted METAR channels *only* for context feedback -- the
-            # yielded/written forecast above stays dense.
+            # Build the autoregressive context feedback on-manifold, i.e. in
+            # exactly the distribution the model saw during training (the
+            # yielded/written forecast above is untouched):
+            #   * sat no-data (off-disk / polar) pixels zeroed: training always
+            #     zeroed them in context (normalized sentinel 0), but the raw
+            #     prediction there is hallucinated non-zero values, so feeding
+            #     it back puts every block >= 2 off-manifold at the disk edge;
+            #   * METAR clamped to the training range [CLIP_MIN, METAR_CLIP_MAX]:
+            #     the residual channels (tmpc/dwpc/mslp) are reconstructed as
+            #     last_ctx + delta AFTER the (-7, 8) loop clamp, so they can
+            #     exceed the training clamp and inject extreme station dots;
+            #   * METAR re-sparsified to station pixels: the model was trained
+            #     with non-station METAR pixels zeroed; feeding back the dense
+            #     (hallucinated) prediction would put the rollout on a context
+            #     distribution it never saw.
+            sat_fb = x_t[:, :c_sat]
+            if sat_nodata_mask is not None:
+                nodata_fb = sat_nodata_mask[:, :, -1:, :, :].expand_as(sat_fb)
+                sat_fb = torch.where(nodata_fb, torch.zeros_like(sat_fb), sat_fb)
+
+            metar_pred = x_t[:, c_sat:].clamp(CLIP_MIN, METAR_CLIP_MAX)
             if metar_station_mask is not None:
-                metar_pred = x_t[:, c_sat:]
                 metar_pred = torch.where(
                     metar_station_mask.expand_as(metar_pred),
                     metar_pred,
                     torch.zeros_like(metar_pred),
                 )
-                x_t_for_ctx = torch.cat([x_t[:, :c_sat], metar_pred], dim=1)
-            else:
-                x_t_for_ctx = x_t
+            x_t_for_ctx = torch.cat([sat_fb, metar_pred], dim=1)
 
             # Update context: drop oldest frames, append generated frames
             if this_nb >= T_ctx:
