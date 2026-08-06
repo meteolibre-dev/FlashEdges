@@ -139,6 +139,18 @@ def main():
         help="Optional seed for reproducible sampling noise (prior + SDE innovations).",
     )
     parser.add_argument(
+        "--mask_all_metar",
+        action="store_true",
+        help=(
+            "Diagnostic: zero ALL METAR channels in the conditioning context "
+            "and in the autoregressive feedback (station mask forced "
+            "all-False), so the trunk runs on satellite + elevation only. "
+            "The model still emits its own METAR forecast in the outputs. "
+            "Use to check whether METAR context/feedback causes the "
+            "rectangular tile artifacts in the satellite forecast."
+        ),
+    )
+    parser.add_argument(
         "--use_residual",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -170,6 +182,7 @@ def main():
         sde_eps=args.sde_eps,
         sde_eps_schedule=args.sde_eps_schedule,
         inference_seed=args.inference_seed,
+        mask_all_metar=args.mask_all_metar,
         device=args.device,
     )
 

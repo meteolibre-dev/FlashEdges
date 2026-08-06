@@ -191,6 +191,7 @@ class FlashEdgesInferenceEngine:
         sde_eps: float = 0.1,
         sde_eps_schedule: str = "t2",
         inference_seed: Optional[int] = None,
+        mask_all_metar: bool = False,
         device: Optional[str] = None,
     ):
         """
@@ -224,6 +225,13 @@ class FlashEdgesInferenceEngine:
                 and vanishes at the data end so the final frame is not noisy.
             inference_seed: Optional seed for reproducible sampling noise
                 (initial structured prior + SDE innovations).
+            mask_all_metar: Diagnostic flag. When True, ALL METAR channels are
+                zeroed in the conditioning context AND the autoregressive
+                feedback (station mask forced all-False), so the trunk is
+                conditioned on satellite + elevation only. The model still
+                emits its own METAR forecast in the yielded outputs. Use to
+                test whether METAR context/feedback contaminates the sat
+                branch (rectangular tile artifacts).
             device: 'cuda' or 'cpu' (auto-detected if None).
         """
         self.model_path = model_path
@@ -239,6 +247,7 @@ class FlashEdgesInferenceEngine:
         self.sde_eps = sde_eps
         self.sde_eps_schedule = sde_eps_schedule
         self.inference_seed = inference_seed
+        self.mask_all_metar = mask_all_metar
         if self.sampler == "sde" and self.interpolation != "linear":
             logger.warning(
                 "SDE sampler is only implemented for interpolation='linear' "
@@ -866,6 +875,18 @@ class FlashEdgesInferenceEngine:
             # this is reused at every AR step to re-sparsify the feedback.
             # Shape (1, 1, 1, H, W) -> broadcasts over c_metar & time.
             metar_station_mask = metar_valid.any(dim=1, keepdim=True).any(dim=2, keepdim=True)
+
+            if self.mask_all_metar:
+                # Diagnostic: condition the trunk on sat + elevation only.
+                # Zero the METAR context and force the feedback station mask
+                # all-False so the re-sparsify step keeps METAR all-zero at
+                # every AR step (same sentinel-0 convention as training).
+                logger.warning(
+                    "mask_all_metar=True: zeroing ALL METAR channels in the "
+                    "context and in the autoregressive feedback (diagnostic)."
+                )
+                metar_tensor = torch.zeros_like(metar_tensor)
+                metar_station_mask = torch.zeros_like(metar_station_mask)
 
             current_context = torch.cat([sat_tensor, metar_tensor], dim=1)
 
