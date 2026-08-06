@@ -236,6 +236,29 @@ def trainer_step(
     else:
         x0 = batch_data[:, :, model.context_frames:]
 
+    # --- Clip the sat TARGET to [CLIP_MIN, 4] and sanitize NaN/Inf ----------
+    # The sat *input* is already clamped in normalize(), but the regression
+    # target x0 is not: residual deltas (x0 - last_ctx) or NaN/Inf that leak
+    # through the mask can place the sat target outside [CLIP_MIN, 4] or at
+    # NaN/Inf. Training the model to predict those saturated/extreme (or
+    # non-finite) target values creates harsh gradients that, during
+    # autoregressive rollout, surface as random NaN outputs from the model.
+    # Clamping the sat target to the same [CLIP_MIN, 4] bounds as the input
+    # (and replacing any residual NaN/Inf with a finite in-range value) keeps
+    # the target well-posed and prevents the NaN-from-target failure mode.
+    #
+    # ``sat_clip_mask`` marks the target pixels that were out of range /
+    # non-finite and got clamped. They are excluded from the sat loss (and the
+    # sat gradient regularizers) via ``sat_mask_tiled`` below, so the model is
+    # never trained to reproduce those saturated-extreme values at all.
+    sat_tgt = x0[:, :c_sat]
+    sat_clip_mask = (
+        torch.isnan(sat_tgt) | torch.isinf(sat_tgt) | (sat_tgt > 4) | (sat_tgt < CLIP_MIN)
+    )
+    sat_tgt = torch.nan_to_num(sat_tgt, nan=0.0, posinf=4.0, neginf=float(CLIP_MIN))
+    sat_tgt = sat_tgt.clamp(CLIP_MIN, 4)
+    x0 = torch.cat([sat_tgt, x0[:, c_sat:]], dim=1)
+
     context_info = batch["spatial_position"]
 
     # ── Context augmentation (identical to v1, applied ONCE before tiling) ──
@@ -294,6 +317,12 @@ def trainer_step(
     x_context_tiled = tile(x_context_t)                              # (K*B, C, ctx, H, W)
     context_info_tiled = tile(context_info)                           # (K*B, ctx_dim)
     sat_mask_tiled = tile(sat_mask[:, :, model.context_frames:])     # (K*B, c_sat, T, H, W)
+    # Exclude sat target pixels that were clamped to [CLIP_MIN, 4] from the
+    # loss: training on clamped extremes teaches the model to output them,
+    # which surfaces as NaN/saturated values during AR rollout. This also
+    # propagates to the sat gradient regularizers, which reuse sat_mask_tiled.
+    sat_clip_mask_tiled = tile(sat_clip_mask)                        # (K*B, c_sat, T, H, W)
+    sat_mask_tiled = sat_mask_tiled & ~sat_clip_mask_tiled
     metar_mask_tiled = tile(metar_mask[:, :, model.context_frames:].bool())  # (K*B, c_met, T, H, W)
     t_tiled = tile(t_emp)                                            # (K*B,)
     da_dt_tiled = tile(da_dt)                                        # (K*B,)
