@@ -405,7 +405,7 @@ def trainer_step(
     # loss: training on clamped extremes teaches the model to output them,
     # which surfaces as NaN/saturated values during AR rollout. This also
     # propagates to the sat gradient regularizers, which reuse sat_mask_emp.
-    sat_clip_mask_emp = sat_clip_mask[:num_emp, :, model.context_frames:]
+    sat_clip_mask_emp = sat_clip_mask[:num_emp]  # already forecast-only (from x0)
     sat_mask_emp = sat_mask_emp & ~sat_clip_mask_emp
     metar_mask_emp = metar_mask[:num_emp, :, model.context_frames:].bool()
 
