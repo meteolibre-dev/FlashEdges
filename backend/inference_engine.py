@@ -538,6 +538,19 @@ class FlashEdgesInferenceEngine:
                     ].to(torch.bfloat16)
                     del sat_pred_batch, metar_pred_batch
 
+                    # Sanitize the model prediction: a single patch emitting
+                    # NaN/Inf (typical at off-disk / polar-gap patches where the
+                    # entire sat context is zero and the model is OOD) would
+                    # otherwise propagate through the Gaussian-weighted
+                    # aggregation and turn the WHOLE global x_t NaN in one
+                    # Euler step (clamp_ below does not fix NaN). Mirror the
+                    # training target sanitization: nan_to_num then clamp to the
+                    # same bounds the model was trained to predict.
+                    x_pred_batch = torch.nan_to_num(
+                        x_pred_batch, nan=0.0, posinf=4.0, neginf=float(CLIP_MIN)
+                    )
+                    x_pred_batch = x_pred_batch.clamp(CLIP_MIN, METAR_CLIP_MAX)
+
                     pw = patch_weights.to(torch.bfloat16)
 
                     for j, (x_start, y_start) in enumerate(coords_batch):
@@ -601,6 +614,13 @@ class FlashEdgesInferenceEngine:
                     x_t.add_(sde_noise, alpha=math.sqrt(2.0 * eps_t * dt))
                     del sde_noise
 
+                # Defensive NaN/Inf guard: clamp_ does not sanitize NaN, and a
+                # single bad patch could have leaked NaN through the
+                # aggregation before the x_pred guard above was added. Replace
+                # any residual NaN/Inf with 0 (the normalized mean) so the next
+                # denoising step starts from a finite state instead of
+                # propagating NaN across the whole grid.
+                x_t = torch.nan_to_num(x_t, nan=0.0, posinf=8.0, neginf=-7.0)
                 x_t.clamp_(-7, 8)
                 del averaged_velocity
 
@@ -824,12 +844,21 @@ class FlashEdgesInferenceEngine:
                 metar_frame = metar_data[i].astype(np.float32)  # (7, H, W)
                 elev_frame = elevation_data[None, :, :]  # (1, H, W)
 
-                # Elevation floor (FlashNet/dataset convention)
-                elev_frame = np.where(elev_frame < 0, ELEVATION_FLOOR, elev_frame)
-
-                # Capture sat no-data mask BEFORE filling NaN
+                # Capture sat no-data mask BEFORE filling NaN (all 5 sat
+                # channels, matching training's sat_mask over GMGSI + elevation)
                 sat_valid = ~np.isnan(sat_frame)
                 sat_frame = np.where(np.isnan(sat_frame), 0.0, sat_frame)
+
+                # Elevation floor (FlashNet/dataset convention). NaN survives
+                # `elev < 0` (NaN comparisons are False in numpy), so fill NaN
+                # explicitly first, then floor the -9999 nodata sentinel. This
+                # matches training, where the dataset's 5-channel sat_mask
+                # caught NaN elevation and zeroed it after normalize; without
+                # this, NaN elevation leaked into the model context here and
+                # corrupted the (shared-trunk) satellite branch output.
+                elev_valid = ~np.isnan(elev_frame)
+                elev_frame = np.where(np.isnan(elev_frame), ELEVATION_FLOOR, elev_frame)
+                elev_frame = np.where(elev_frame < 0, ELEVATION_FLOOR, elev_frame)
 
                 # Capture metar mask, then replace NaN with sentinel
                 metar_valid = ~np.isnan(metar_frame)
@@ -839,16 +868,16 @@ class FlashEdgesInferenceEngine:
                 sat_elev = np.concatenate([sat_frame, elev_frame], axis=0)  # (5, H, W)
                 frame = np.concatenate([sat_elev, metar_frame], axis=0)[None, ...]  # (1, 12, H, W)
                 initial_frames.append(frame)
-                sat_nodata_masks.append((~sat_valid)[None, ...])  # (1, 4, H, W)
+                # (1, 5, H, W): no-data mask over ALL sat channels incl. elevation
+                sat_nodata_masks.append(
+                    np.concatenate([~sat_valid, ~elev_valid], axis=0)[None, ...]
+                )
 
             current_context = np.stack(initial_frames, axis=2)  # (1, 12, T_ctx, H, W)
             current_context = torch.from_numpy(current_context).float().to(self.device)
 
-            sat_nodata_mask = np.stack(sat_nodata_masks, axis=2)  # (1, 4, T_ctx, H, W)
+            sat_nodata_mask = np.stack(sat_nodata_masks, axis=2)  # (1, 5, T_ctx, H, W)
             sat_nodata_mask = torch.from_numpy(sat_nodata_mask).to(self.device)
-            # Expand to include elevation channel (always valid)
-            elev_valid = torch.zeros_like(sat_nodata_mask[:, :1])  # all False = valid
-            sat_nodata_mask = torch.cat([sat_nodata_mask, elev_valid], dim=1)  # (1, 5, T_ctx, H, W)
 
             # --- Normalize ---
             sat_tensor = current_context[:, :c_sat]
