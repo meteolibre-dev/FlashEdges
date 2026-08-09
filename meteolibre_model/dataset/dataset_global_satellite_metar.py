@@ -140,6 +140,25 @@ def preprocess_record(date: datetime, record, nb_temporal: int, precip_to_dbz: b
         .copy()
     )
 
+    # --- Sanitize LWIR (channel 0) low-fill artifacts -> NaN ---
+    # The dataset generator occasionally writes LWIR brightness temperature
+    # as ~0 K (a fill/sensor artifact) while the other GMGSI channels (VIS,
+    # WV, SWIR) carry real data. Real LWIR is 150-320 K; even edge-of-disk
+    # degradation stays >= ~40 K and is *consistent* across frames. The
+    # artifact instead drops LWIR to 0-9 K in *some* frames (often context)
+    # while the target frame is clean. After normalization 0 K -> -2.84,
+    # which the model reads as "very cold thick cloud", so patches with
+    # zero-LWIR context but a clean target teach the model
+    # "cold context -> clear target" -- the spurious one-hour clearing
+    # artifact seen at inference. Threshold 10 K cleanly separates the
+    # artifact (0-9 K, never in real data) from legitimate edge values
+    # (>= ~40 K). Converting to NaN makes the trainer's sat_mask
+    # (~torch.isnan) exclude these pixels from input and loss so they are
+    # never trained on. Only channel 0 (LWIR) is sanitized -- VIS/WV/SWIR
+    # can legitimately be 0 (e.g. nighttime VIS).
+    lwir = sat_patch[:, 0]
+    sat_patch[:, 0] = np.where(lwir < 10.0, np.nan, lwir)
+
     # --- elevation (H, W) -> (T, 1, H, W), floor negatives/nodata ---
     if record.get("elevation_data") is not None:
         elev = (
