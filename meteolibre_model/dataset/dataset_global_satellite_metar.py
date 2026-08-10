@@ -140,24 +140,54 @@ def preprocess_record(date: datetime, record, nb_temporal: int, precip_to_dbz: b
         .copy()
     )
 
-    # --- Sanitize LWIR (channel 0) low-fill artifacts -> NaN ---
-    # The dataset generator occasionally writes LWIR brightness temperature
-    # as ~0 K (a fill/sensor artifact) while the other GMGSI channels (VIS,
-    # WV, SWIR) carry real data. Real LWIR is 150-320 K; even edge-of-disk
-    # degradation stays >= ~40 K and is *consistent* across frames. The
-    # artifact instead drops LWIR to 0-9 K in *some* frames (often context)
-    # while the target frame is clean. After normalization 0 K -> -2.84,
-    # which the model reads as "very cold thick cloud", so patches with
-    # zero-LWIR context but a clean target teach the model
-    # "cold context -> clear target" -- the spurious one-hour clearing
-    # artifact seen at inference. Threshold 10 K cleanly separates the
-    # artifact (0-9 K, never in real data) from legitimate edge values
-    # (>= ~40 K). Converting to NaN makes the trainer's sat_mask
-    # (~torch.isnan) exclude these pixels from input and loss so they are
-    # never trained on. Only channel 0 (LWIR) is sanitized -- VIS/WV/SWIR
-    # can legitimately be 0 (e.g. nighttime VIS).
+    # --- Sanitize GMGSI fill/saturation artifacts via LWIR -> NaN (all 4ch) ---
+    # The GMGSI channels (LWIR, VIS, WV, SWIR) are produced together per pixel
+    # per frame: if one channel is a fill/sensor artifact at a (T, H, W)
+    # position, the others at that same position are almost certainly fake too
+    # (same input, same composite, same coverage). We detect the bad pixels
+    # from the LWIR channel (channel 0) because it has the most unambiguous
+    # artifact signatures, then propagate NaN to *all four* GMGSI channels at
+    # those positions so the trainer's sat_mask (~torch.isnan) excludes the
+    # whole bad pixel from input and loss -- not just the LWIR value.
+    #
+    # Two LWIR artifact thresholds, both with strong empirical justification:
+    #
+    #   1. Low fill (< 10 K): the generator occasionally writes LWIR ~0 K
+    #      (a fill/sensor artifact) while other channels carry real data.
+    #      Real LWIR is 150-320 K; even edge-of-disk degradation stays >= ~40 K
+    #      and is *consistent* across frames. The artifact drops LWIR to 0-9 K
+    #      in *some* frames (often context) while the target is clean. After
+    #      normalization 0 K -> -2.84, which the model reads as "very cold thick
+    #      cloud", teaching "cold context -> clear target" -- the spurious
+    #      one-hour clearing artifact seen at inference. 10 K cleanly
+    #      separates the artifact (0-9 K, never in real data) from legitimate
+    #      edge values (>= ~40 K).
+    #
+    #   2. High saturation (>= 255 K): the GMGSI LWIR channel is stored with an
+    #      effective 0..255 range (uint8-equivalent), and the generator writes
+    #      a saturation fill at exactly 255 K wherever the value is
+    #      missing/invalid on the high side. In a 40-file / 525M-pixel sample
+    #      the 235-254 K bins are smooth and tiny (~3-7k px each, ~0.001%),
+    #      then 255 K alone spikes to ~1.03M px (0.197%) -- ~150x its
+    #      neighbours, the signature of a clipped fill value, not real warm
+    #      surfaces. After normalization 255 K -> +3.04, which the model reads
+    #      as "very warm thick cloud", and crucially these 255-pixels *flicker*
+    #      frame-to-frame: across 609 patches that contain any 255, 561 (92%)
+    #      have it in only some frames vs 48 persistent -- i.e. a coherent blob
+    #      of max-value pixels appears for one hour then vanishes. Training on
+    #      that teaches the model to emit the same one-hour "big blob" jumps
+    #      seen at inference. The smooth real warm tail (<= 254 K) is preserved.
+    #
+    # Propagating the NaN to VIS/WV/SWIR (instead of only LWIR) avoids the
+    # previous asymmetry where a bad pixel kept its (possibly also-fake) VIS /
+    # WV / SWIR values in input and loss. VIS/WV/SWIR can legitimately be 0
+    # (e.g. nighttime VIS), so they are NOT used to *detect* bad pixels --
+    # only LWIR is -- but once a pixel is flagged bad via LWIR, all four of
+    # its GMGSI channels are masked together.
     lwir = sat_patch[:, 0]
-    sat_patch[:, 0] = np.where(lwir < 10.0, np.nan, lwir)
+    bad_lwir = (lwir < 10.0) | (lwir >= 255.0)            # (T, H, W) bool
+    bad_lwir = np.broadcast_to(bad_lwir[:, None, :, :], sat_patch.shape)  # (T,4,H,W)
+    sat_patch = np.where(bad_lwir, np.nan, sat_patch)
 
     # --- elevation (H, W) -> (T, 1, H, W), floor negatives/nodata ---
     if record.get("elevation_data") is not None:
