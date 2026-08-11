@@ -42,10 +42,10 @@ MODEL_PATH="${MODEL_PATH:-models/checkpoint.safetensors}"
 # H5 file(s) to forecast — accepts a single path or a glob pattern.
 # Default: the sample file shipped in data/.
 #   Override:  H5_PATTERN="data/2026-07-*_flashedges_global.h5" sbatch ...
-H5_PATTERN="${H5_PATTERN:-data/2026-06-28_10-00_flashedges_global.h5}"
+H5_PATTERN="${H5_PATTERN:-data/*.h5}"
 
 # How many hours ahead to forecast (each AR step generates nb_forecast=3 frames).
-FORECAST_STEPS="${FORECAST_STEPS:-18}"
+FORECAST_STEPS="${FORECAST_STEPS:-24}"
 DENOISING_STEPS="${DENOISING_STEPS:-32}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 

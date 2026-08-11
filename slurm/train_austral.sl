@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=24              # 24 for gpu_h200 | 16 for gpu/hpda/gpu_all | 4 for hpda_mig
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --time=08:10:00
+#SBATCH --time=12:10:00
 #SBATCH --output=logs/%x-%j.out         # %x=job-name  %j=jobid  (relative to submit dir)
 #SBATCH --error=logs/%x-%j.err
 
