@@ -403,6 +403,16 @@ class JiT3D_Modern(nn.Module):
         self.isolate_metar_grad = False
 
         self.initialize_weights()
+        # Re-initialize ONLY the METAR (kpi) head with Kaiming He init. The
+        # trunk + satellite head keep the trunc_normal init above (overwritten
+        # by a checkpoint resume anyway). The metar head is intentionally reset
+        # when migrating a pretrained checkpoint across residual configs: it is
+        # the only sub-module whose weights are DROPPED from the transfer
+        # safetensors (see scripts/strip_metar_head_weights.py), so the init
+        # applied HERE is the one that takes effect after a strict=False resume
+        # (the absent metar-head keys are never overwritten). Kaiming He
+        # (fan_in, relu) gives the ConvGRU gates a well-conditioned start.
+        self._init_metar_head_kaiming()
 
         # NOTE: the old gated-blend gate_proj zero/negative-bias init is gone --
         # the ConvGRU head is randomly initialized and learns from scratch
@@ -418,6 +428,29 @@ class JiT3D_Modern(nn.Module):
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.Conv3d):
             nn.init.trunc_normal_(m.weight, std=0.02)
+
+    def _init_metar_head_kaiming(self):
+        """Kaiming-He init for the METAR (kpi) head ONLY.
+
+        Applied AFTER the global trunc_normal init so the metar head -- which
+        is deliberately DROPPED from transfer checkpoints (see
+        scripts/strip_metar_head_weights.py) and re-created on a strict=False
+        resume -- starts from a Kaiming He distribution instead of the trunk's
+        trunc_normal(0.02). The trunk + satellite head keep their init above
+        (and are overwritten by a checkpoint resume anyway); only the metar
+        head's init survives, because its keys are absent from the transfer
+        safetensors and are therefore never overwritten by load_state_dict.
+        Fan_in / relu is the canonical He scheme; biases are zeroed. No-op
+        when no kpi head exists (single-head model).
+        """
+        head = getattr(self, "kpi_head", None) or getattr(self, "final_layer_kpi", None)
+        if head is None:
+            return
+        for m in head.modules():
+            if isinstance(m, (nn.Conv2d, nn.Conv3d, nn.Linear)):
+                nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="relu")
+                if getattr(m, "bias", None) is not None:
+                    nn.init.constant_(m.bias, 0.0)
 
     def get_sinusoidal_time(self, t):
         device = t.device
