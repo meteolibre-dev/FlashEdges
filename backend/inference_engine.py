@@ -185,7 +185,6 @@ class FlashEdgesInferenceEngine:
         batch_size: int = 64,
         context_frames: int = 4,
         interpolation: str = "linear",
-        use_residual: bool = True,
         noise_rho: float = 0.,
         sampler: str = "sde",
         sde_eps: float = 0.1,
@@ -204,10 +203,6 @@ class FlashEdgesInferenceEngine:
             batch_size: Number of patches processed per model forward pass.
             context_frames: Number of past frames fed as context (default 4).
             interpolation: 'linear' or 'polynomial' RF schedule.
-            use_residual: Whether the model was trained with residual targets
-                (default True, matching configs.yml residual: true). When on,
-                only METAR residual channels (tmpc/dwpc/mslp) are reconstructed
-                as last_context + delta; sat and other METAR stay absolute.
             noise_rho: Structured-noise sharing strength in [0,1] for the
                 linear-flow prior (0.5 = half shared across channels/frames,
                 0 = fully independent, 1 = fully rank-one).
@@ -241,7 +236,6 @@ class FlashEdgesInferenceEngine:
         self.batch_size = batch_size
         self.context_frames = context_frames
         self.interpolation = interpolation
-        self.use_residual = use_residual
         self.noise_rho = noise_rho
         self.sampler = sampler
         self.sde_eps = sde_eps
@@ -275,6 +269,11 @@ class FlashEdgesInferenceEngine:
         if self.config_name not in config:
             raise KeyError(f"Config '{self.config_name}' not found in {config_path}")
         self.params = config[self.config_name]
+        # Whether the model was trained with residual targets is a property of
+        # the config (``residual: true|false``), not a runtime choice: feeding
+        # a non-residual checkpoint with residual reconstruction (or vice-versa)
+        # double-counts / omits the last context frame on tmpc/dwpc/mslp.
+        self.use_residual = bool(self.params.get("residual", False))
 
     def _load_model(self) -> None:
         """Load model weights from safetensors."""

@@ -151,16 +151,6 @@ def main():
         ),
     )
     parser.add_argument(
-        "--use_residual",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Enable per-channel residual reconstruction (default: on). "
-            "Only METAR tmpc/dwpc/mslp are last_context+delta; "
-            "sat/precip/cloud/wind stay absolute. Pass --no-use-residual to disable."
-        ),
-    )
-    parser.add_argument(
         "--device",
         type=str,
         default=None,
@@ -177,7 +167,6 @@ def main():
         batch_size=args.batch_size,
         context_frames=args.context_frames,
         interpolation=args.interpolation,
-        use_residual=args.use_residual,
         sampler=args.sampler,
         sde_eps=args.sde_eps,
         sde_eps_schedule=args.sde_eps_schedule,
