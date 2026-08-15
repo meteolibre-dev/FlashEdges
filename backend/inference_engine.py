@@ -179,7 +179,7 @@ class FlashEdgesInferenceEngine:
     def __init__(
         self,
         model_path: str,
-        config_name: str = "model_v1_global_satellite_metar",
+        config_name: str = "model_v3_global_satellite_metar",
         patch_size: int = 128,
         denoising_steps: int = 32,
         batch_size: int = 64,

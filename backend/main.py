@@ -63,7 +63,7 @@ def main():
     parser.add_argument(
         "--config_name",
         type=str,
-        default="model_v1_global_satellite_metar",
+        default="model_v3_global_satellite_metar",
         help="Config key in meteolibre_model/config/configs.yml.",
     )
     parser.add_argument(
