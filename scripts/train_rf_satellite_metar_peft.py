@@ -79,15 +79,26 @@ SAT_CHANNEL_NAMES = ["gmgsi_lwir", "gmgsi_vis", "gmgsi_wv", "gmgsi_sw", "elevati
 LORA_TARGET_MODULES = r".*blocks\.\d+\.(attn\.(qkv|proj)|mlp\.w[123])$"
 
 # Modules fully fine-tuned alongside the adapters (peft ``modules_to_save``).
-#   final_layer_kpi   : the split METAR decoder head
-#   persist_proj / gate_proj : the gated previous-step METAR persistence path
-# These are matched by suffix too, so ``jit.final_layer_kpi``, ``jit.persist_proj``
-# and ``jit.gate_proj`` all match.
-MODULES_TO_SAVE = ["final_layer_kpi", "persist_proj", "gate_proj"]
+#   kpi_head          : the ConvGRU METAR refinement head (current architecture;
+#                      created when kpi_in_channels > 0, i.e. use_metar_ref=True).
+#                      Submodules: final_layer, scalar_mlp, cells.*.conv_{rz,c},
+#                      out_proj -- all matched by the "kpi_head" substring.
+#   final_layer_kpi   : the OLD split METAR decoder head (legacy, single-head
+#                      fallback when use_metar_ref=False). Kept for back-compat.
+#   persist_proj / gate_proj : the OLD gated previous-step METAR persistence
+#                      path (removed from the current model; kept so old
+#                      checkpoints/configs still match harmlessly).
+# peft matches modules_to_save by suffix/substring, so "kpi_head" catches
+# ``jit.kpi_head.*`` and "final_layer_kpi" catches ``jit.final_layer_kpi``.
+# NOTE: with kpi_in_channels=7 (the FlashEdges config) the model creates
+# ``kpi_head`` (ConvGRUHead) and does NOT create ``final_layer_kpi`` -- so
+# omitting "kpi_head" here would leave the entire METAR head frozen at its
+# Kaiming init and never trained, producing a fixed station-pixel overshoot.
+MODULES_TO_SAVE = ["kpi_head", "final_layer_kpi", "persist_proj", "gate_proj"]
 
 # Substrings used to detect the METAR-head parameters for the dedicated
 # higher-LR optimizer group (mirrors MODULES_TO_SAVE).
-METAR_HEAD_KEYWORDS = ("final_layer_kpi", "persist_proj", "gate_proj")
+METAR_HEAD_KEYWORDS = ("kpi_head", "final_layer_kpi", "persist_proj", "gate_proj")
 
 
 def load_config(config_name: str):
