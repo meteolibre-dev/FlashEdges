@@ -56,6 +56,13 @@ BATCH_SIZE="${BATCH_SIZE:-64}"
 # consider pointing OUTPUT_DIR at $PROJ (persistent Lustre, no quota).
 OUTPUT_DIR="${OUTPUT_DIR:-forecasts}"
 
+# Config name in meteolibre_model/config/configs.yml. The ``residual`` flag
+# (tmpc/dwpc/mslp regressed as a delta vs last context) is taken from the
+# config, not a CLI switch, so the inference parametrization always matches the
+# checkpoint's training parametrization.
+#   v1/v2: residual: true  | v3/v4: residual: false
+CONFIG_NAME="${CONFIG_NAME:-model_v4_global_satellite_metar}"
+
 mkdir -p "$OUTPUT_DIR"
 
 # ===== Run ==================================================================
@@ -76,6 +83,7 @@ for h5_file in $H5_PATTERN; do
     echo "============================================================"
     echo "  Forecasting : $h5_file"
     echo "  Model       : $MODEL_PATH"
+    echo "  Config      : $CONFIG_NAME"
     echo "  Steps ahead : $FORECAST_STEPS  (denoising=$DENOISING_STEPS)"
     echo "  Output dir  : $OUTPUT_DIR"
     echo "============================================================"
@@ -89,7 +97,7 @@ for h5_file in $H5_PATTERN; do
         --batch_size "$BATCH_SIZE" \
         --context_frames 4 \
         --interpolation linear \
-        --use_residual
+        --config_name "${CONFIG_NAME}"
 
     rc=$?
     if [ $rc -ne 0 ]; then
