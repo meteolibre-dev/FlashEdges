@@ -92,19 +92,36 @@ def mmh_to_dbz(rate_mmh: np.ndarray) -> np.ndarray:
     behaved for ML losses than raw mm/h (heavy rain otherwise dominates the
     gradient).
 
-      R = 0   -> DRY_DBZ (-5 by default)   (no echo, valid station -- kept
-                 distinct from trace rain, which Marshall-Palmer places near
-                 0 dBZ)
-      R = 1   -> 23 dBZ
-      R = 25  -> 45.7 dBZ
-      NaN     -> NaN     (no station; left for the sentinel fill)
+    The wet path is FLOORED at 0 dBZ (R ~= 0.028 mm/h, the lower limit where
+    Marshall-Palmer is physically valid). Without this floor the formula is
+    non-monotonic at the dry/trace boundary: extrapolating below R=0.028 gives
+    dBZ < 0, and at R ~ 0.0001 reaches ~ -41 dBZ -- BELOW DRY_DBZ (-5), so a
+    station reporting a trace of rain would get a LOWER reflectivity than one
+    reporting no rain at all. That broke the dry/trace distinction and fed
+    sub-dry values into training (the model then drove the p01m output to the
+    ~-40 normalized-clamp floor at inference). Flooring at 0 keeps the three
+    regimes strictly ordered: dry (-5) < trace (0) < light+ rain (>0), and
+    pins the physical range to [-5, ~65] dBZ.
+
+      R = 0      -> DRY_DBZ (-5 by default)   (no echo, valid station)
+      0<R<=0.028 -> 0 dBZ                    (trace rain, floored -- kept
+                                                distinct from dry)
+      R = 1      -> 23 dBZ
+      R = 25     -> 45.7 dBZ
+      NaN        -> NaN     (no station; left for the sentinel fill)
+
+    NOTE: changing this shifts the p01m distribution, so METAR_MEAN/STD for
+    p01m must be recomputed (scripts/compute_mean_std.py) and the model
+    retrained before deploying -- an existing checkpoint trained with the
+    un-floored formula would see an OOD p01m input at inference.
     """
     out = np.full_like(rate_mmh, np.nan, dtype=np.float32)
     finite = np.isfinite(rate_mmh)
     dry = finite & (rate_mmh <= 0.0)
     wet = finite & (rate_mmh > 0.0)
     out[dry] = DRY_DBZ
-    out[wet] = 10.0 * np.log10(200.0) + 16.0 * np.log10(rate_mmh[wet])
+    dbz_wet = 10.0 * np.log10(200.0) + 16.0 * np.log10(rate_mmh[wet])
+    out[wet] = np.maximum(dbz_wet, 0.0)
     return out
 
 

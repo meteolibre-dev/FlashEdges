@@ -87,6 +87,24 @@ NUM_METAR_CHANNELS = 7
 # Number of satellite channels (GMGSI 4 + elevation 1)
 NUM_SAT_CHANNELS = 5
 
+# Index of the p01m channel within the METAR layout (matches
+# METAR_FEATURES = [tmpc, dwpc, mslp, cloud_cover, p01m, wind_u, wind_v]).
+P01M_IDX = 4
+
+# Physical dBZ clamp for the precipitation channel AFTER denormalization.
+# The training-side normalized clamp ([CLIP_MIN, METAR_CLIP_MAX], shared across
+# all 7 METAR channels) lets p01m denormalize to ~[-40, +135] dBZ -- nonsensical,
+# since real radar reflectivity is ~[-5, 65] dBZ (DRY_DBZ=-5 dry; 65 ~ heavy
+# rain / hail). With the old mmh_to_dbz the trace-rain tail could legitimately
+# reach ~-41, so a generic floor at DRY_DBZ would erase the dry/trace
+# distinction; the planned mmh_to_dbz fix (floor wet path at 0 dBZ) makes the
+# physical range exactly [-5, 65]. This clamp is a per-channel safety net that
+# catches any model output drifting outside the physical range independent of
+# the training clamp, and it does NOT touch the normalized-space feedback
+# context (that keeps the on-manifold [CLIP_MIN, METAR_CLIP_MAX] clamp).
+P01M_DBZ_MIN = -5.0   # DRY_DBZ
+P01M_DBZ_MAX = 65.0
+
 
 def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
     """Convert a TIFF to Cloud Optimized GeoTIFF format in-place."""
@@ -647,6 +665,19 @@ class FlashEdgesInferenceEngine:
                 nodata_last = sat_nodata_mask[:, :, -1:, :, :].expand_as(sat_denorm)
                 sat_denorm = torch.where(nodata_last, torch.zeros_like(sat_denorm), sat_denorm)
 
+            # Per-channel physical clamp on the precipitation band (p01m, in
+            # dBZ). The shared normalized clamp [CLIP_MIN, METAR_CLIP_MAX] is
+            # set for tmpc (range ~-40 C) and lets p01m denormalize to ~[-40,
+            # +135] dBZ, far outside the physical ~[-5, 65] dBZ range. Clamp the
+            # written/emitted forecast band to the physical range so downstream
+            # consumers never see impossible reflectivities. Applied to the
+            # yielded forecast only; the AR feedback context keeps the
+            # on-manifold normalized-space clamp below.
+            if P01M_IDX < metar_denorm.shape[1]:
+                metar_denorm[:, P01M_IDX] = metar_denorm[:, P01M_IDX].clamp(
+                    P01M_DBZ_MIN, P01M_DBZ_MAX
+                )
+
             yield sat_denorm.cpu(), metar_denorm.cpu()
 
             # Build the autoregressive context feedback on-manifold, i.e. in
@@ -803,6 +834,14 @@ class FlashEdgesInferenceEngine:
                 metar_data = hf["metar_data"][:]     # (T, 7, H, W) float32
                 elevation_data = hf["elevation_data"][:]  # (H, W) float32
 
+                num_frames = int(hf.attrs["num_frames"])
+                transform = list(hf.attrs["transform"])
+                epsg = int(hf.attrs["epsg"])
+                frame_timestamps = list(hf.attrs.get("frame_timestamps", []))
+
+            c_sat = NUM_SAT_CHANNELS   # 5 (GMGSI 4 + elevation 1)
+            c_metar = NUM_METAR_CHANNELS  # 7
+
             # --- p01m units: mm/h -> dBZ (match training) ---
             # The training dataset converts the p01m channel to radar
             # reflectivity via Marshall-Palmer (precip_to_dbz=True, see
@@ -819,14 +858,6 @@ class FlashEdgesInferenceEngine:
             finite = ~np.isnan(p01m)
             p01m[finite] = mmh_to_dbz(p01m[finite])
             metar_data[:, METAR_PRECIP_IDX] = p01m
-
-                num_frames = int(hf.attrs["num_frames"])
-                transform = list(hf.attrs["transform"])
-                epsg = int(hf.attrs["epsg"])
-                frame_timestamps = list(hf.attrs.get("frame_timestamps", []))
-
-            c_sat = NUM_SAT_CHANNELS   # 5 (GMGSI 4 + elevation 1)
-            c_metar = NUM_METAR_CHANNELS  # 7
 
             if num_frames < self.context_frames:
                 raise ValueError(
