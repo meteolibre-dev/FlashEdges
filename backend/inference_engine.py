@@ -803,6 +803,23 @@ class FlashEdgesInferenceEngine:
                 metar_data = hf["metar_data"][:]     # (T, 7, H, W) float32
                 elevation_data = hf["elevation_data"][:]  # (H, W) float32
 
+            # --- p01m units: mm/h -> dBZ (match training) ---
+            # The training dataset converts the p01m channel to radar
+            # reflectivity via Marshall-Palmer (precip_to_dbz=True, see
+            # dataset_global_satellite_metar.py / mmh_to_dbz): dry (R=0) ->
+            # DRY_DBZ=-5, 1 mm/h -> ~23 dBZ. The H5 input stores RAW mm/h, so
+            # without this conversion the model is conditioned on p01m in the
+            # wrong units (dry feeds normalized +0.334 instead of -0.208),
+            # driving the forecast off-manifold. NaN stations are preserved
+            # (mmh_to_dbz only touches finite values).
+            from meteolibre_model.dataset.dataset_global_satellite_metar import (
+                mmh_to_dbz, METAR_PRECIP_IDX,
+            )
+            p01m = metar_data[:, METAR_PRECIP_IDX]
+            finite = ~np.isnan(p01m)
+            p01m[finite] = mmh_to_dbz(p01m[finite])
+            metar_data[:, METAR_PRECIP_IDX] = p01m
+
                 num_frames = int(hf.attrs["num_frames"])
                 transform = list(hf.attrs["transform"])
                 epsg = int(hf.attrs["epsg"])
