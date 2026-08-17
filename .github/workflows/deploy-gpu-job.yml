@@ -71,7 +71,7 @@ jobs:
             --task-timeout 3600 \
             --max-retries 0 \
             --execution-environment=gen2 \
-            --service-account=flashedges-backend@${{ env.PROJECT_ID }}.iam.gserviceaccount.com
+            --service-account=flashnet-backend@${{ env.PROJECT_ID }}.iam.gserviceaccount.com
 
       - name: 'Verify GPU Deployment'
         run: |
