@@ -1,0 +1,29 @@
+# FlashEdges Backend Dependencies (inference / GCP job)
+
+# GCP
+google-cloud-storage>=2.14.0
+google-auth>=2.27.0
+
+# Configuration
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+
+# GeoTIFF / COG
+rasterio>=1.3.0
+rio-tiler>=6.0.0
+rio-cogeo>=5.0.0
+
+# Data / H5
+h5py>=3.10.0
+numpy>=1.26.0
+pyyaml>=6.0
+
+# ML inference (torch is provided by the base image)
+safetensors>=0.4.0
+suncalc>=0.1.3
+tqdm>=4.66.0
+einops>=0.8.1
+
+# Retry / utilities
+tenacity>=8.2.0

@@ -293,8 +293,50 @@ class FlashEdgesInferenceEngine:
         # double-counts / omits the last context frame on tmpc/dwpc/mslp.
         self.use_residual = bool(self.params.get("residual", False))
 
+    def _download_model_from_gcs(self, gcs_path: str, local_path: str) -> None:
+        """Download model weights from Google Cloud Storage.
+
+        Args:
+            gcs_path: GCS path (e.g., gs://bucket/path/model.safetensors)
+            local_path: Local path to save the model.
+        """
+        from google.cloud import storage
+        from google.oauth2 import service_account
+
+        logger.info(f"Downloading model from {gcs_path} to {local_path}")
+
+        if not gcs_path.startswith("gs://"):
+            raise ValueError(f"Invalid GCS path: {gcs_path}")
+
+        path_parts = gcs_path[5:].split("/")
+        bucket_name = path_parts[0]
+        blob_name = "/".join(path_parts[1:])
+
+        credentials = None
+        if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+            credentials = service_account.Credentials.from_service_account_file(
+                os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            )
+
+        client = storage.Client(credentials=credentials)
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+
+        os.makedirs(os.path.dirname(os.path.abspath(local_path)), exist_ok=True)
+        blob.download_to_filename(local_path)
+        logger.info(f"Model downloaded successfully to {local_path}")
+
     def _load_model(self) -> None:
-        """Load model weights from safetensors."""
+        """Load model weights from safetensors.
+
+        If a ``MODEL_GCS_PATH`` env var is set and the local ``model_path`` does
+        not exist, the weights are downloaded from GCS first (mirrors flashnet's
+        inference engine).
+        """
+        model_gcs_path = os.environ.get("MODEL_GCS_PATH", "")
+        if model_gcs_path and not os.path.exists(self.model_path):
+            self._download_model_from_gcs(model_gcs_path, self.model_path)
+
         logger.info(f"Loading model from {self.model_path}")
         torch.set_float32_matmul_precision('medium')
 
