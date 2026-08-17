@@ -32,6 +32,7 @@ import os
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
+from typing import Optional
 
 # Ensure project root is on sys.path so meteolibre_model resolves
 project_root = os.path.abspath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
