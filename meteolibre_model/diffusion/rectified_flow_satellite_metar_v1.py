@@ -634,7 +634,7 @@ def full_image_generation(
     nb_element=1,
     normalize_input=True,
     use_residual=True,
-    noise_rho=0.5,
+    noise_rho=0.,
 ):
     """Generate forecast frames via Euler integration of the RF ODE."""
     model.eval()
