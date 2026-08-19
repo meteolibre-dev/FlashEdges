@@ -69,6 +69,19 @@ from accelerate.utils import set_seed, DistributedDataParallelKwargs
 from safetensors.torch import save_file, load_file
 from tqdm.auto import tqdm
 
+# torch.compile's donated-buffer optimization reuses activation buffers inside
+# the compiled backward, which forbids retain_graph=True -- and TrunkGradProbe
+# needs retain_graph (two autograd.grad traversals before the real backward).
+# Without this the probe dies on its first call with "backward function was
+# compiled with non-empty donated buffers". Costs a bit of activation memory;
+# must be set before the first compiled backward is traced.
+try:
+    import torch._functorch.config as _functorch_config
+
+    _functorch_config.donated_buffer = False
+except (ImportError, AttributeError):
+    pass
+
 # Add project root to sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, project_root)
@@ -170,10 +183,12 @@ class TrunkGradProbe:
         DDP it fires no reducer hooks: no allreduce, no interference with the
         training backward. Values are rank-local and only computed/logged on
         the main process (other ranks just wait at the next collective).
-      * torch.compile: the probe runs outside the compiled region on tensors
-        produced by the compiled forward. If a build rejects this, the probe
-        disables itself after the first error and training continues -- a
-        diagnostic must never crash a run.
+      * torch.compile: the probe's autograd.grad(retain_graph=True) is
+        incompatible with inductor's donated-buffer reuse in the compiled
+        backward, so donated_buffer is disabled at module import (see the
+        comment near the imports). If some other build still rejects the
+        probe, it disables itself after the first error and training
+        continues -- a diagnostic must never crash a run.
 
     Reference params (chosen to tell the interesting story):
       * ``patch_embed`` -- the input bottleneck: the only place the raw METAR
