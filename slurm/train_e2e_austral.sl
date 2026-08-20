@@ -20,10 +20,13 @@
 # stay continuous across relaunches:
 #     SLURM_SCRIPT=slurm/train_e2e_austral.sl bash slurm/submit_chain.sh
 # Balance knobs can be overridden per chain, e.g.:
-#     TRUNK_LR=3e-7 METAR_LOSS_WEIGHT=0.5 \
+#     TRUNK_LR=2.5e-6 METAR_LOSS_WEIGHT=0.02 \
 #         SLURM_SCRIPT=slurm/train_e2e_austral.sl bash slurm/submit_chain.sh
 # (tune METAR_LOSS_WEIGHT from the TensorBoard grads/metar_over_sat probe,
-# target band ~0.3-1 after the ramp completes -- NOT from the loss ratio).
+# NOT from the loss ratio. Judge the probe by its MEDIAN over an epoch --
+# the sparse metar loss swings ~20x batch-to-batch (p10 ~15, p90 ~275 at
+# w=1.0); 2026-08-20: rebalanced w 1.0 -> 0.05 + trunk 1e-6 -> 5e-6 after
+# two flat epochs with probe median ~70.)
 
 # ===== CRIANN Austral environment ===========================================
 module purge
@@ -47,9 +50,18 @@ cd "$CODE_DIR"                            # checkpoints land in ./models_e2e/ (p
 # ===== Run knobs (env-overridable, defaults match the script) ===============
 BASE_CKPT="${BASE_CKPT:-models/checkpoint.safetensors}"   # sat-trained base (ignored once OUT_DIR has a checkpoint)
 OUT_DIR="${OUT_DIR:-models_e2e/}"                         # this run's checkpoints; never touches models/
-TRUNK_LR="${TRUNK_LR:-1e-6}"                              # shared trunk LR (0.1x from-scratch)
+TRUNK_LR="${TRUNK_LR:-5e-6}"                              # shared trunk LR. 5e-6 (was 1e-6): two flat
+                                                          # epochs at 1e-6 proved the trunk can't move;
+                                                          # sat stayed pinned at 0.046 the whole time,
+                                                          # so there is headroom. Tripwire: if sat
+                                                          # per-chan (esp. gmgsi_lwir) drifts +5-10%,
+                                                          # halve this.
 METAR_HEAD_LR="${METAR_HEAD_LR:-1e-4}"                    # ConvGRU metar head LR
-METAR_LOSS_WEIGHT="${METAR_LOSS_WEIGHT:-1.0}"             # target branch weight (ramped 0->target over 1000 steps)
+METAR_LOSS_WEIGHT="${METAR_LOSS_WEIGHT:-0.05}"            # target branch weight (ramped 0->target over
+                                                          # 1000 steps). 0.05 (was 1.0): probe measured
+                                                          # grads/metar_over_sat median ~70 at w=1.0
+                                                          # (trunk direction ~all metar, 20x batch-to-
+                                                          # batch noise); 0.05 targets ratio ~3.5.
 
 if [[ ! -f "$OUT_DIR/checkpoint.safetensors" ]]; then
     echo "[e2e] no resume checkpoint in $OUT_DIR -> starting from base: $BASE_CKPT"
