@@ -48,6 +48,10 @@ class ModelConfig(BaseModel):
     sde_eps: float = 0.1
     sde_eps_schedule: str = "t2"
     inference_seed: Optional[int] = 128
+    # Fraction of NON-station METAR pixels kept (predicted values) in the AR
+    # feedback, in addition to real station positions (0.0 = strict
+    # re-sparsification; ~0.05 stabilizes station-sparse patches).
+    metar_keep_ratio: float = 0.0
 
 
 class CacheConfig(BaseModel):
@@ -99,6 +103,7 @@ class Config(BaseModel):
                 sde_eps_schedule=os.getenv("SDE_EPS_SCHEDULE", "t2"),
                 inference_seed=(int(os.getenv("INFERENCE_SEED", "128"))
                                 if os.getenv("INFERENCE_SEED") not in (None, "") else None),
+                metar_keep_ratio=float(os.getenv("METAR_KEEP_RATIO", "0.0")),
             ),
             cache=CacheConfig(
                 cache_dir=os.getenv("CACHE_DIR", "/tmp/flashedges_cache"),

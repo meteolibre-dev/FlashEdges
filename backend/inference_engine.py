@@ -209,6 +209,7 @@ class FlashEdgesInferenceEngine:
         sde_eps_schedule: str = "t2",
         inference_seed: Optional[int] = None,
         mask_all_metar: bool = False,
+        metar_keep_ratio: float = 0.0,
         device: Optional[str] = None,
     ):
         """
@@ -245,6 +246,19 @@ class FlashEdgesInferenceEngine:
                 emits its own METAR forecast in the yielded outputs. Use to
                 test whether METAR context/feedback contaminates the sat
                 branch (rectangular tile artifacts).
+            metar_keep_ratio: Fraction in [0, 1] of NON-station METAR pixels
+                whose PREDICTED values are kept in the autoregressive feedback
+                instead of being re-masked to 0. 0.0 (default) keeps the strict
+                re-sparsification (only original station positions fed back).
+                A small value (e.g. 0.05) additionally keeps ~5% of the
+                remaining pixels as "virtual stations" -- hallucinated values,
+                but they densify the METAR context and stabilize patches with
+                very few real stations (less train/inference drift in the
+                feedback than fully dense METAR, more anchoring than fully
+                sparse). The random subset is resampled at every AR step, with
+                the same positions across all METAR channels & forecast frames
+                (station-like dots, not per-channel noise). Ignored when
+                mask_all_metar=True.
             device: 'cuda' or 'cpu' (auto-detected if None).
         """
         self.model_path = model_path
@@ -260,6 +274,11 @@ class FlashEdgesInferenceEngine:
         self.sde_eps_schedule = sde_eps_schedule
         self.inference_seed = inference_seed
         self.mask_all_metar = mask_all_metar
+        self.metar_keep_ratio = float(metar_keep_ratio)
+        if not (0.0 <= self.metar_keep_ratio <= 1.0):
+            raise ValueError(
+                f"metar_keep_ratio must be in [0, 1], got {self.metar_keep_ratio}"
+            )
         if self.sampler == "sde" and self.interpolation != "linear":
             logger.warning(
                 "SDE sampler is only implemented for interpolation='linear' "
@@ -448,6 +467,9 @@ class FlashEdgesInferenceEngine:
                 autoregressive context for the next step, so the rollout sees
                 the same sparse station distribution it trained on. The yielded /
                 written forecast stays dense (only the feedback is re-sparsified).
+                When the engine's metar_keep_ratio > 0, a random fraction of
+                NON-station pixels is additionally kept ("virtual stations"),
+                densifying the feedback context in station-sparse patches.
 
         Yields:
             (sat_batch_cpu, metar_batch_cpu) after each autoregressive step,
@@ -464,11 +486,26 @@ class FlashEdgesInferenceEngine:
             logger.info(f"sde_eps: {self.sde_eps} (schedule={self.sde_eps_schedule})")
 
         noise_generator = None
+        generator_device = "cuda" if str(self.device).startswith("cuda") else "cpu"
         if self.inference_seed is not None:
-            generator_device = "cuda" if str(self.device).startswith("cuda") else "cpu"
             noise_generator = torch.Generator(device=generator_device)
             noise_generator.manual_seed(self.inference_seed)
             logger.info(f"Using inference noise seed {self.inference_seed}")
+
+        # "Virtual station" keep ratio for the METAR feedback re-sparsification
+        # (disabled under the mask_all_metar diagnostic, which must stay fully
+        # masked). Uses a dedicated RNG stream so the keep-mask draws do not
+        # perturb the denoising noise sequence.
+        keep_ratio = 0.0 if self.mask_all_metar else self.metar_keep_ratio
+        keep_generator = None
+        if keep_ratio > 0.0:
+            if self.inference_seed is not None:
+                keep_generator = torch.Generator(device=generator_device)
+                keep_generator.manual_seed(self.inference_seed + 1)
+            logger.info(
+                f"METAR AR feedback: keeping a random {keep_ratio:.1%} of "
+                "non-station pixels in addition to original station positions"
+            )
 
         C = c_sat + c_metar
         _, _, T_ctx, H_big, W_big = initial_context.shape
@@ -736,7 +773,11 @@ class FlashEdgesInferenceEngine:
             #   * METAR re-sparsified to station pixels: the model was trained
             #     with non-station METAR pixels zeroed; feeding back the dense
             #     (hallucinated) prediction would put the rollout on a context
-            #     distribution it never saw.
+            #     distribution it never saw. With metar_keep_ratio > 0, a random
+            #     fraction of the non-station pixels is kept as "virtual
+            #     stations" (predicted values), trading a bit of on-manifold
+            #     purity for a denser, more stable METAR context in sparse
+            #     patches.
             sat_fb = x_t[:, :c_sat]
             if sat_nodata_mask is not None:
                 nodata_fb = sat_nodata_mask[:, :, -1:, :, :].expand_as(sat_fb)
@@ -744,8 +785,25 @@ class FlashEdgesInferenceEngine:
 
             metar_pred = x_t[:, c_sat:].clamp(CLIP_MIN, METAR_CLIP_MAX)
             if metar_station_mask is not None:
+                keep_mask = metar_station_mask
+                if keep_ratio > 0.0:
+                    # Draw "virtual stations": a random fraction of the
+                    # non-station pixels whose predicted values are kept in
+                    # the feedback instead of being re-masked to 0. Resampled
+                    # each AR step; same positions across channels & frames
+                    # (station-like dots). Shape matches metar_station_mask
+                    # (1, 1, 1, H, W) -> broadcasts over c_metar & time.
+                    rand_keep = (
+                        torch.rand(
+                            metar_station_mask.shape,
+                            device=self.device,
+                            generator=keep_generator,
+                        )
+                        < keep_ratio
+                    ) & ~metar_station_mask
+                    keep_mask = metar_station_mask | rand_keep
                 metar_pred = torch.where(
-                    metar_station_mask.expand_as(metar_pred),
+                    keep_mask.expand_as(metar_pred),
                     metar_pred,
                     torch.zeros_like(metar_pred),
                 )

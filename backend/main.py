@@ -148,6 +148,7 @@ def run_cloud_pipeline(target_date: Optional[datetime] = None) -> dict:
             sde_eps=config.model.sde_eps,
             sde_eps_schedule=config.model.sde_eps_schedule,
             inference_seed=config.model.inference_seed,
+            metar_keep_ratio=config.model.metar_keep_ratio,
         )
 
         upload_fn = _make_upload_fn(gcs_client, input_date_folder)
@@ -207,6 +208,7 @@ def run_local(args):
         sde_eps_schedule=args.sde_eps_schedule,
         inference_seed=args.inference_seed,
         mask_all_metar=args.mask_all_metar,
+        metar_keep_ratio=args.metar_keep_ratio,
         device=args.device,
     )
 
@@ -272,6 +274,15 @@ def main():
                         choices=["const", "t", "t2"])
     parser.add_argument("--inference_seed", type=int, default=128)
     parser.add_argument("--mask_all_metar", action="store_true")
+    parser.add_argument(
+        "--metar_keep_ratio", type=float, default=0.0,
+        help="Fraction in [0,1] of NON-station METAR pixels whose predicted "
+             "values are kept in the autoregressive feedback instead of "
+             "re-masking them to 0 (e.g. 0.05 = keep a random 5%% of "
+             "non-station pixels as 'virtual stations' in addition to real "
+             "station positions). Stabilizes patches with very few METAR "
+             "stations. 0.0 = strict re-sparsification (default).",
+    )
     parser.add_argument("--device", type=str, default=None,
                         help="cuda or cpu (auto-detected if not specified).")
 
