@@ -14,7 +14,9 @@ Two modes:
                     local scratch dir.
                  3. Run tiled diffusion inference, uploading each GeoTIFF to
                     ``gs://inference_result_flashedges_forecast/forecasts/{DATE}/
-                    {YYYYMMDD_HHMM}/<tif>`` as soon as it is written.
+                    {RUN_YYYYMMDD_HHMM}/<tif>`` as soon as it is written, where
+                    {RUN_YYYYMMDD_HHMM} is the time the run started (not the
+                    forecast target time).
 
 Examples
 --------
@@ -56,34 +58,27 @@ def _make_upload_fn(gcs_client, input_date_folder: str):
     """Build the per-file upload callback for the inference engine.
 
     Output layout:
-        gs://<dest_bucket>/forecasts/{input_date}/{YYYYMMDD_HHMM}/<filename>
+        gs://<dest_bucket>/forecasts/{input_date}/{RUN_YYYYMMDD_HHMM}/<filename>
 
-    where ``YYYYMMDD_HHMM`` is the forecast target time parsed from the TIFF
-    filename (``forecast_YYYYMMDDHHMM_{sat,metar}.tif``).
+    where ``RUN_YYYYMMDD_HHMM`` is the time the inference RUN started
+    (captured once when this callback is built), not the forecast target
+    time embedded in the TIFF filename. All files of a single run therefore
+    land in the same folder even if generation spans a minute boundary.
     """
     from backend.config import get_config
 
     config = get_config()
     dest_prefix = config.gcp.dest_prefix  # "forecasts"
 
+    # Run time captured ONCE, so every file of the run shares one folder.
+    run_folder = datetime.now().strftime("%Y%m%d_%H%M")
+
     def upload_fn(filepath: str):
         try:
             filepath = Path(filepath)
             name = filepath.name
-            # forecast_202608171500_sat.tif  ->  token "202608171500"
-            parts = name.split("_")
-            if len(parts) < 2:
-                logger.warning(f"Skipping upload of {name}: cannot parse forecast time")
-                return
-            ts = parts[1]
-            if len(ts) >= 12 and ts.isdigit():
-                # YYYYMMDDHHMM -> YYYYMMDD_HHMM
-                pred_folder = f"{ts[:8]}_{ts[8:12]}"
-            else:
-                logger.warning(f"Skipping upload of {name}: cannot parse forecast time")
-                return
 
-            dest_blob = f"{dest_prefix}/{input_date_folder}/{pred_folder}/{name}"
+            dest_blob = f"{dest_prefix}/{input_date_folder}/{run_folder}/{name}"
             gcs_client.upload_file(str(filepath), dest_blob,
                                    content_type="image/tiff")
         except Exception:
