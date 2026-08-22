@@ -58,20 +58,24 @@ def _make_upload_fn(gcs_client, input_date_folder: str):
     """Build the per-file upload callback for the inference engine.
 
     Output layout:
-        gs://<dest_bucket>/forecasts/{input_date}/{RUN_YYYYMMDD_HHMM}/<filename>
+        gs://<dest_bucket>/forecasts/{input_date}/{RUN_YYYYMMDD_HH00}/<filename>
 
-    where ``RUN_YYYYMMDD_HHMM`` is the time the inference RUN started
-    (captured once when this callback is built), not the forecast target
-    time embedded in the TIFF filename. All files of a single run therefore
-    land in the same folder even if generation spans a minute boundary.
+    where ``RUN_YYYYMMDD_HH00`` is the time the inference RUN started,
+    truncated to the hour (captured once when this callback is built), not
+    the forecast target time embedded in the TIFF filename. All files of a
+    single run therefore land in the same folder even if generation spans a
+    minute or hour boundary.
     """
     from backend.config import get_config
 
     config = get_config()
     dest_prefix = config.gcp.dest_prefix  # "forecasts"
 
-    # Run time captured ONCE, so every file of the run shares one folder.
-    run_folder = datetime.now().strftime("%Y%m%d_%H%M")
+    # Run time captured ONCE, floored to the hour (HH:00), so every file of
+    # the run shares one folder (e.g. a 13:24 start -> 20260822_1300).
+    run_folder = datetime.now().replace(
+        minute=0, second=0, microsecond=0
+    ).strftime("%Y%m%d_%H%M")
 
     def upload_fn(filepath: str):
         try:
