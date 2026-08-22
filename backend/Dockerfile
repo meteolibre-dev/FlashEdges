@@ -50,7 +50,7 @@ ENV MODEL_PATH=/tmp/flashedges_cache/model.safetensors
 
 # Model weights are downloaded from GCS on first run if not present locally.
 # Upload your chosen checkpoint to this path (or override MODEL_GCS_PATH).
-ENV MODEL_GCS_PATH=gs://eumetsat_mtg_preprocess/assets_models/checkpoint_17augpeft.safetensors
+ENV MODEL_GCS_PATH=gs://eumetsat_mtg_preprocess/assets_models/checkpoint_21aug_prettygood.safetensors
 
 # GCP buckets / prefixes.
 ENV GCP_SOURCE_BUCKET=eumetsat_mtg_preprocess
