@@ -267,7 +267,7 @@ def main():
     parser.add_argument("--sde_eps", type=float, default=0.1)
     parser.add_argument("--sde_eps_schedule", type=str, default="t2",
                         choices=["const", "t", "t2"])
-    parser.add_argument("--inference_seed", type=int, default=128)
+    parser.add_argument("--inference_seed", type=int, default=None)
     parser.add_argument("--mask_all_metar", action="store_true")
     parser.add_argument(
         "--metar_keep_ratio", type=float, default=0.0,
