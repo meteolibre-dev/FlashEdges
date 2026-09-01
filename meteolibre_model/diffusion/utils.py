@@ -28,6 +28,21 @@ SAT_STD = torch.tensor(
     [43.3566, 53.4644, 26.8234, 42.3147, 874.6544], dtype=torch.float32
 )
 
+# --- v2 dataset: GMGSI(4) + radar(1) + elevation(1) ---
+# Channel layout for ``dataset_global_satellite_metar_v2``:
+#   sat_patch_data (T, 6, H, W) — [gmgsi_lwir, gmgsi_vis, gmgsi_wv, gmgsi_sw,
+#                                   radar_dbz, elevation]
+# The GMGSI/elevation stats are carried over from the v1 5-channel block
+# (same channels, same position); the radar channel uses simple hand-picked
+# stats (mean 15 dBZ, std 20 dBZ) covering the practical DBZH range
+# (~[-5, 65] dBZ) — recompute with scripts/compute_mean_std.py for production.
+SAT_MEAN_V2 = torch.tensor(
+    [123.2937, 46.5135, 169.5546, 125.0362, 10.0, 677.6422], dtype=torch.float32
+)
+SAT_STD_V2 = torch.tensor(
+    [43.3566, 53.4644, 26.8234, 42.3147, 20.0, 874.6544], dtype=torch.float32
+)
+
 # --- METAR: [tmpc, dwpc, mslp, cloud_cover, p01m_dBZ, wind_u, wind_v] ---
 METAR_MEAN = torch.tensor(
     [24.0332, 15.0477, 1017.3679, 0.2766, -3.0849, 0.574, 0.664],
@@ -45,6 +60,10 @@ SAT_RESIDUAL_MEAN = torch.zeros(5, dtype=torch.float32)
 SAT_RESIDUAL_STD = torch.ones(5, dtype=torch.float32)
 METAR_RESIDUAL_MEAN = torch.zeros(7, dtype=torch.float32)
 METAR_RESIDUAL_STD = torch.ones(7, dtype=torch.float32)
+
+# v2 6-channel layout residuals (radar included)
+SAT_RESIDUAL_MEAN_V2 = torch.zeros(6, dtype=torch.float32)
+SAT_RESIDUAL_STD_V2 = torch.ones(6, dtype=torch.float32)
 
 # --- FastNet-style per-channel loss weights (s_j = 1 / Var[Delta_x_j]) -------
 # Per-channel inverse variance of the *normalized* time-difference, mean-

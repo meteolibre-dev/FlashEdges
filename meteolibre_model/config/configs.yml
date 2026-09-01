@@ -119,3 +119,63 @@ model_v4_global_satellite_metar:
     depth: 12
     num_heads: 12
     context_dim: 6          # spatial(4) + d(1) + t(1)  -- t LAST
+
+
+model_v5_global_satellite_metar:
+  log_every_n_steps: 5
+  save_every_n_epochs: 1
+  model_dir: "models/"
+  parametrization: "standard"
+  interpolation: "linear"
+  batch_size: 64
+  learning_rate: 0.0001
+  num_epochs: 500
+  seed: 42
+  sigma_noise_input: 10.0
+  gradient_clip_value: 1.0
+  residual: false
+  dataset_path: "."
+  metar_loss_weight: 1.
+  model_type: "jit"
+  model:
+    sat_in_channels: 6      # GMGSI 4 + raar + elevation 1
+    kpi_in_channels: 7      # METAR 7 (p01m in dBZ)
+    sat_out_channels: 6
+    kpi_out_channels: 7
+    context_frames: 4
+    img_size: [7, 128, 128]
+    patch_size: [1, 8, 8]
+    embed_dim: 768
+    depth: 12
+    num_heads: 12
+    context_dim: 6
+
+
+model_v6_global_satellite_metar:
+  log_every_n_steps: 5
+  save_every_n_epochs: 1
+  model_dir: "models/"
+  parametrization: "standard"
+  interpolation: "linear"
+  batch_size: 64
+  learning_rate: 0.00001
+  num_epochs: 500
+  seed: 42
+  sigma_noise_input: 10.0
+  gradient_clip_value: 1.0
+  residual: false
+  dataset_path: "."
+  metar_loss_weight: 1.
+  model_type: "jit"
+  model:
+    sat_in_channels: 6      # GMGSI 4 + raar + elevation 1
+    kpi_in_channels: 7      # METAR 7 (p01m in dBZ)
+    sat_out_channels: 6
+    kpi_out_channels: 7
+    context_frames: 4
+    img_size: [7, 128, 128]
+    patch_size: [1, 8, 8]
+    embed_dim: 768
+    depth: 12
+    num_heads: 12
+    context_dim: 6

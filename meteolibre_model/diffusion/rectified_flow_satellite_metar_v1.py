@@ -27,6 +27,8 @@ from meteolibre_model.dataset.dataset_global_satellite_metar import METAR_FEATUR
 from meteolibre_model.diffusion.utils import (
     SAT_MEAN,
     SAT_STD,
+    SAT_MEAN_V2,
+    SAT_STD_V2,
     METAR_MEAN,
     METAR_STD,
     SAT_RESIDUAL_MEAN,
@@ -118,12 +120,47 @@ def normalize(sat_data, metar_data, device):
 
     return sat_data, metar_data
 
-
 def denormalize(sat_data, metar_data, device):
     """Denormalize back to physical units."""
     sat_data = (
         sat_data * SAT_STD.to(device).view(1, -1, 1, 1, 1)
         + SAT_MEAN.to(device).view(1, -1, 1, 1, 1)
+    )
+    metar_data = (
+        metar_data * METAR_STD.to(device).view(1, -1, 1, 1, 1)
+        + METAR_MEAN.to(device).view(1, -1, 1, 1, 1)
+    )
+    return sat_data, metar_data
+
+
+def normalize_v2(sat_data, metar_data, device):
+    """Normalize sat (5ch) and metar (7ch) batches using precomputed stats.
+
+    GMGSI NaN (off-disk) should be filled with 0 *before* calling this; the
+    caller is responsible for building the sat mask.  After normalize the
+    caller zeroes no-data pixels (sat NaN / METAR -10000 sentinel) to the
+    neutral mean 0 -- see trainer_step / full_image_generation -- so the
+    no-data convention the model sees is 0, not the clamp extreme.
+    """
+    sat_data = (
+        sat_data
+        - SAT_MEAN_V2.to(device).view(1, -1, 1, 1, 1)
+    ) / SAT_STD_V2.to(device).view(1, -1, 1, 1, 1)
+    sat_data = sat_data.clamp(CLIP_MIN, 4)
+
+    metar_data = (
+        metar_data
+        - METAR_MEAN.to(device).view(1, -1, 1, 1, 1)
+    ) / METAR_STD.to(device).view(1, -1, 1, 1, 1)
+    metar_data = metar_data.clamp(CLIP_MIN, METAR_CLIP_MAX)
+
+    return sat_data, metar_data
+
+def denormalize_v2(sat_data, metar_data, device):
+    """Denormalize back to physical units."""
+    sat_data = (
+        sat_data * SAT_STD_V2.to(device).view(1, -1, 1, 1, 1)
+        + SAT_MEAN_V2.to(device).view(1, -1, 1, 1, 1)
     )
     metar_data = (
         metar_data * METAR_STD.to(device).view(1, -1, 1, 1, 1)

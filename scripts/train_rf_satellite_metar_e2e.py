@@ -86,8 +86,8 @@ except (ImportError, AttributeError):
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, project_root)
 
-from meteolibre_model.dataset.dataset_global_satellite_metar import (
-    FlashEdgesGlobalDataset,
+from meteolibre_model.dataset.dataset_global_satellite_metar_v2 import (
+    FlashEdgesGlobalDatasetV2,
     METAR_FEATURES,
 )
 from meteolibre_model.diffusion.rectified_flow_satellite_metar_v1 import (
@@ -267,7 +267,7 @@ def main():
     parser.add_argument(
         "--config",
         type=str,
-        default="model_v3_global_satellite_metar",
+        default="model_v6_global_satellite_metar",
         help="Config name in meteolibre_model/config/configs.yml",
     )
     parser.add_argument(
@@ -435,7 +435,7 @@ def main():
             f"steps/epoch={args.steps_per_epoch})"
         )
     else:
-        dataset = FlashEdgesGlobalDataset(
+        dataset = FlashEdgesGlobalDatasetV2(
             localrepo=dataset_path,
             cache_size=args.cache_size,
             seed=seed,
