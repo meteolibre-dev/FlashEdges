@@ -306,6 +306,7 @@ def trainer_step(
     use_residual=True,
     metar_loss_weight=0.05,
     metar_drop_frac=0.05,
+    metar_count_denom=400 * 3,
     noise_rho=0.0,
     temporal_weight_scale=1.0,
     grad_weight=0.,
@@ -330,6 +331,23 @@ def trainer_step(
     frame weighting), 1.0 = full linear ramp. Ported from flashnet's
     rectified_flow_lightning_shortcut_xpred_blur_v2.
 
+    ``metar_count_denom`` (default None) enables station-count-weighted METAR
+    loss (variance reduction for sparse-observation batches). When set to a
+    float, each patch's METAR loss contribution is weighted by
+    ``n_i / metar_count_denom`` where ``n_i`` is the patch's station count
+    (number of valid tmpc pixels over the forecast frames) and
+    ``metar_count_denom`` is a FIXED reference count (expected station-pixels
+    per patch over the forecast window, e.g. ~250 stations x T_forecast for
+    the global dataset). This makes the per-pixel METAR gradient independent
+    of the batch's station density: station-poor (ocean) batches down-weight
+    proportionally instead of being amplified by the masked mean's 1/N_valid
+    factor, which removes the batch-to-batch gradient variance between ocean
+    and Europe/US patches. The expected loss value is unchanged when
+    ``metar_count_denom`` matches the dataset mean, so the sat:metar balance
+    (``metar_loss_weight``) is preserved; log ``metar_count_factor`` from
+    ``components`` to verify it hovers around 1. None keeps the legacy
+    batch-global per-channel masked mean.
+
     ``grad_weight`` / ``temporal_grad_weight`` (default 0.1) scale two
     FastNet-style regularizers (Dunstan et al. 2026, AIES-D-25-0090.1), ported
     from flashnet's rectified_flow_lightning_shortcut_xpred_blur_v2:
@@ -343,7 +361,9 @@ def trainer_step(
     Returns (total_loss, loss_sat, loss_metar, components) where ``components``
     is a dict of detached per-channel masked-MSE tensors
     (``sat_per_chan``, ``metar_per_chan``) for diagnostic logging, plus the
-    detached scalar regularizer losses (``loss_grad_sat``, ``loss_tgrad_sat``).
+    detached scalar regularizer losses (``loss_grad_sat``, ``loss_tgrad_sat``)
+    and, when ``metar_count_denom`` is set, the batch-mean station-count
+    factor (``metar_count_factor``, should hover around 1.0).
     """
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -597,9 +617,37 @@ def trainer_step(
     # skipped), matching the previous behaviour.
     metar_diff = weight * (x_metar_pred_emp - x0_emp[:, c_sat:]) ** 2
     met_m = metar_mask_emp.float()
-    met_cnt = met_m.sum(dim=(0, 2, 3, 4)).clamp(min=1.0)               # (c_metar,)
-    metar_per_chan = (metar_diff * met_m).sum(dim=(0, 2, 3, 4)) / met_cnt  # (c_metar,)
+
+    if metar_count_denom is not None:
+        # --- station-count-weighted METAR loss -----------------------------
+        # Per-patch masked mean weighted by n_i / metar_count_denom (n_i =
+        # station count of the patch), averaged over the batch. Algebraically
+        # this is a FIXED-denominator masked mean (total masked sum divided
+        # by B * metar_count_denom): the per-pixel gradient no longer carries
+        # a 1/N_valid factor, so sparse (ocean) patches contribute
+        # proportionally to their station count instead of being amplified.
+        # Station presence is taken from the tmpc channel only (channel 0,
+        # the most universally reported variable) and that single count is
+        # shared by all 7 channels — the per-channel masks essentially
+        # coincide (same stations), and p01m/wind are reported less often, so
+        # per-channel counts would silently reweight channels against each
+        # other.
+        stn_m = met_m[:, :1]                                   # (B, 1, T, H, W)
+        n_i = stn_m.sum(dim=(1, 2, 3, 4))                      # (B,)
+        count_factor = n_i / float(metar_count_denom)          # (B,)
+
+        cnt_ic = met_m.sum(dim=(2, 3, 4)).clamp(min=1.0)       # (B, c_metar)
+        patch_mean_ic = (metar_diff * met_m).sum(dim=(2, 3, 4)) / cnt_ic
+        metar_per_chan = (patch_mean_ic * count_factor[:, None]).mean(dim=0)
+    else:
+        # Legacy: batch-global per-channel masked mean.
+        cnt_ic = met_m.sum(dim=(0, 2, 3, 4)).clamp(min=1.0)    # (c_metar,)
+        metar_per_chan = (metar_diff * met_m).sum(dim=(0, 2, 3, 4)) / cnt_ic
+
     loss_metar = (metar_per_chan * metar_lw).mean()
+    metar_count_factor = (
+        count_factor.mean().detach() if metar_count_denom is not None else None
+    )
 
     # --- Horizontal-gradient regularization (FastNet-style artifact suppressor) ---
     # Ported from flashnet's rectified_flow_lightning_shortcut_xpred_blur_v2
@@ -658,6 +706,10 @@ def trainer_step(
         "loss_grad_sat": loss_grad_sat.detach(),
         "loss_tgrad_sat": loss_tgrad_sat.detach(),
     }
+    if metar_count_factor is not None:
+        # Diagnostic for the station-count weighting: should hover around 1.0
+        # when metar_count_denom matches the dataset's mean station count.
+        components["metar_count_factor"] = metar_count_factor
     return total, loss_sat, loss_metar, components
 
 
