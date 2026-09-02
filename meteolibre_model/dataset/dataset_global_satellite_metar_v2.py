@@ -39,9 +39,12 @@ union) is therefore applied at load time:
     stored value was), so the trainer's ``~torch.isnan`` masking treats them
     as invalid input exactly like the satellite NaN masking
     (``sat_patch = np.where(bad_lwir, np.nan, sat_patch)``);
-  * pixels INSIDE coverage keep their stored value (0 dBZ = real dry pixel,
-    positive dBZ = echo). Covered-but-NaN pixels (e.g. a fully missing radar
-    frame) also stay NaN and are simply excluded from the loss.
+  * pixels INSIDE coverage keep their stored value, then everything below
+    0.1 dBZ (noise / ground clutter / trace) is snapped to DRY_DBZ (-5 dBZ),
+    the same "no rain" marker as the METAR p01m dBZ conversion — giving a
+    sharp rain/no-rain cut (dry = -5, rain > 0). Covered-but-NaN pixels
+    (e.g. a fully missing radar frame) stay NaN and are simply excluded
+    from the loss.
 
 The mask is indexed by patch centre (lon/lat) on the same 1800x3600 0.1-degree
 GMGSI grid the generator used. For simplicity a SINGLE static array is used,
@@ -70,6 +73,7 @@ import torch
 from suncalc import get_position
 
 from meteolibre_model.dataset.dataset_global_satellite_metar import (
+    DRY_DBZ,
     METAR_FEATURES,
     METAR_NAN_SENTINEL,
     METAR_PRECIP_IDX,
@@ -237,6 +241,18 @@ def preprocess_record(
     # covered-but-NaN (missing frame / no echo encoding) stays NaN and is
     # excluded from input + loss by the trainer's ~torch.isnan masking.
     radar = np.where(covered[None, None, :, :], radar, np.nan)
+
+    # --- Dry/trace binarization: dBZ < 0.1 -> DRY_DBZ (-5), same convention
+    # as the METAR p01m channel (mmh_to_dbz in dataset_global_satellite_metar).
+    # Radar reflectivities just above 0 dBZ are noise/clutter ground mist, not
+    # meaningful rain: without this, the model sees a continuous fog of tiny
+    # dBZ values and cannot draw a clean rain/no-rain boundary. Snapping
+    # everything below 0.1 dBZ (R <~ 0.03 mm/h, i.e. below Marshall-Palmer's
+    # validity floor) to the same DRY_DBZ marker used for dry METAR reports
+    # gives a sharp cut: DRY_DBZ (-5) = no rain, > 0 dBZ = rain, matching the
+    # precip channel. NaN (uncovered / missing frame) is untouched: NaN < 0.1
+    # is False so those pixels stay NaN and keep being masked out.
+    radar = np.where(radar < 0.1, DRY_DBZ, radar)
 
     # --- elevation (H, W) -> (T, 1, H, W), floor negatives/nodata ---
     if record.get("elevation_data") is not None:
