@@ -125,14 +125,14 @@ def main():
     parser.add_argument(
         "--prefetch_rows",
         type=int,
-        default=8,
+        default=0,
         help="Streaming: rows to prefetch in a background thread (overlaps I/O "
         "with compute). 0 disables.",
     )
     parser.add_argument(
         "--shuffle_buffer",
         type=int,
-        default=200,
+        default=100,
         help="Streaming: rows held in the shuffle buffer for decorrelation "
         "(~4 MB/row; larger => better shuffle but more RAM). Set to 1 to "
         "disable shuffling.",
@@ -147,7 +147,7 @@ def main():
     parser.add_argument(
         "--cache_size",
         type=int,
-        default=2,
+        default=1,
         help="Per-worker LRU cache of fully-loaded parquet DataFrames. Each "
         "cached file holds ~4.2 MB/row in RAM, so memory scales as "
         "num_workers * cache_size * rows_per_file -- on a RAM-limited node "
