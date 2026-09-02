@@ -332,7 +332,7 @@ def main():
         muon_params, lr=learning_rate, weight_decay=0.01
     )
     opt_adam = torch.optim.AdamW(
-        adamw_params, lr=learning_rate / 3, weight_decay=0.01
+        adamw_params, lr=learning_rate, weight_decay=0.01
     )
     optimizer = [opt_muon, opt_adam]
 
