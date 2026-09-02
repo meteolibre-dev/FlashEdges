@@ -387,7 +387,7 @@ def trainer_step(
     sat_mask = ~torch.isnan(sat_data)
     sat_data = torch.where(torch.isnan(sat_data), torch.zeros_like(sat_data), sat_data)
 
-    sat_data, metar_data = normalize(sat_data, metar_data, device)
+    sat_data, metar_data = normalize_v2(sat_data, metar_data, device)
     # --- Zero no-data pixels AFTER normalize (sentinel = neutral mean 0) ----
     # The METAR conv weights in PatchEmbed3D are trained on only the ~5e-5
     # fraction of station pixels; at the other 99.99% of pixels the sentinel
@@ -749,7 +749,7 @@ def full_image_generation(
         )
 
         if normalize_input:
-            sat_data, metar_data = normalize(sat_data, metar_data, device=device)
+            sat_data, metar_data = normalize_v2(sat_data, metar_data, device=device)
             # same sentinel=0 convention as training so the sampled context
             # matches the distribution the model was trained on.
             sat_data = torch.where(~sat_nodata, sat_data, torch.zeros_like(sat_data))
