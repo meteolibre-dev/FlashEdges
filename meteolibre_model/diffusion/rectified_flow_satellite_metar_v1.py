@@ -36,6 +36,7 @@ from meteolibre_model.diffusion.utils import (
     METAR_RESIDUAL_MEAN,
     METAR_RESIDUAL_STD,
     SAT_LOSS_WEIGHT,
+    SAT_LOSS_WEIGHT_V2,
     METAR_LOSS_WEIGHT,
 )
 
@@ -598,8 +599,13 @@ def trainer_step(
     # intra-branch per-channel balance changes. Defaults are all-ones (i.e. the
     # previous unweighted masked-mean) until you run
     # ``scripts/compute_loss_weights.py`` and paste the result into utils.py.
-    sat_lw = SAT_LOSS_WEIGHT.to(device)[:c_sat]        # (c_sat,)
-    metar_lw = METAR_LOSS_WEIGHT.to(device)[:c_metar]  # (c_metar,)
+    # Select the loss-weight layout by the actual channel count: 6 channels =
+    # v2 dataset (GMGSI 4 + radar + elevation), 5 = v1 (GMGSI 4 + elevation).
+    if c_sat == SAT_LOSS_WEIGHT_V2.numel():
+        sat_lw = SAT_LOSS_WEIGHT_V2.to(device)[:c_sat]     # (c_sat,)
+    else:
+        sat_lw = SAT_LOSS_WEIGHT.to(device)[:c_sat]        # (c_sat,)
+    metar_lw = METAR_LOSS_WEIGHT.to(device)[:c_metar]      # (c_metar,)
 
     # --- sat loss: per-channel masked mean, then s_j-weighted channel mean ---
     sat_diff = weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2  # (B,c_sat,T,H,W)

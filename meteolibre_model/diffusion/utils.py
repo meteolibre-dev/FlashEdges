@@ -92,3 +92,14 @@ SAT_LOSS_WEIGHT = torch.tensor(
 METAR_LOSS_WEIGHT = torch.tensor(
     [1.1829, 0.9163, 3.9911, 0.2683, 0.1199, 0.3948, 0.3267], dtype=torch.float32
 )
+
+# --- v2 6-channel satellite branch: GMGSI(4) + radar(1) + elevation(1) ------
+# The 4 GMGSI values carry over from v1 (same channels, same positions);
+# elevation keeps its static-channel value. The radar channel uses a neutral
+# placeholder (1.0): radar dBZ moves a lot frame-to-frame so its FastNet
+# 1/Var[Delta] weight is likely BELOW 1, but the exact value must be measured
+# with scripts/compute_loss_weights.py over the v2 dataset (which needs a
+# 6-channel-aware update) before trusting the intra-branch balance.
+SAT_LOSS_WEIGHT_V2 = torch.tensor(
+    [0.9208, 1.1572, 0.9409, 0.9811, 1.0, 0.5], dtype=torch.float32
+)
