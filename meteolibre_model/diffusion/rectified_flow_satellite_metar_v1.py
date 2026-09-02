@@ -307,7 +307,7 @@ def trainer_step(
     use_residual=True,
     metar_loss_weight=0.05,
     metar_drop_frac=0.05,
-    metar_count_denom=400 * 3,
+    metar_count_denom=100 * 3,
     noise_rho=0.0,
     temporal_weight_scale=1.0,
     grad_weight=0.,
