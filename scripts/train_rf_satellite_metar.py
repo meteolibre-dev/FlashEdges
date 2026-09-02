@@ -140,14 +140,14 @@ def main():
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=10,
+        default=5,
         help="DataLoader num_workers (file-level sharding lets each worker "
         "stream its own parquet files in parallel). Default 4.",
     )
     parser.add_argument(
         "--cache_size",
         type=int,
-        default=1,
+        default=2,
         help="Per-worker LRU cache of fully-loaded parquet DataFrames. Each "
         "cached file holds ~4.2 MB/row in RAM, so memory scales as "
         "num_workers * cache_size * rows_per_file -- on a RAM-limited node "
