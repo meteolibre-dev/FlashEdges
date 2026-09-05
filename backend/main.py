@@ -148,6 +148,7 @@ def run_cloud_pipeline(target_date: Optional[datetime] = None) -> dict:
             sde_eps_schedule=config.model.sde_eps_schedule,
             inference_seed=config.model.inference_seed,
             metar_keep_ratio=config.model.metar_keep_ratio,
+            radar_cov_path=config.model.radar_cov_path,
         )
 
         upload_fn = _make_upload_fn(gcs_client, input_date_folder)
@@ -208,6 +209,7 @@ def run_local(args):
         inference_seed=args.inference_seed,
         mask_all_metar=args.mask_all_metar,
         metar_keep_ratio=args.metar_keep_ratio,
+        radar_cov_path=args.radar_cov_path,
         device=args.device,
     )
 
@@ -257,7 +259,10 @@ def main():
                         help="Directory to save GeoTIFF outputs (local mode).")
     parser.add_argument("--config_name", type=str,
                         default="model_v4_global_satellite_metar",
-                        help="Config key in meteolibre_model/config/configs.yml.")
+                        help="Config key in meteolibre_model/config/configs.yml. "
+                             "model_v5/v6_* are the v2 6-channel layouts "
+                             "(GMGSI 4 + radar 1 + elevation 1) that consume "
+                             "the H5 radar_data band.")
     parser.add_argument("--forecast_steps", type=int, default=24)
     parser.add_argument("--nb_forecast", type=int, default=3)
     parser.add_argument("--denoising_steps", type=int, default=16)
@@ -281,6 +286,12 @@ def main():
              "non-station pixels as 'virtual stations' in addition to real "
              "station positions). Stabilizes patches with very few METAR "
              "stations. 0.0 = strict re-sparsification (default).",
+    )
+    parser.add_argument(
+        "--radar_cov_path", type=str, default=None,
+        help="Path to the packed radar coverage NPZ (default: auto-resolve "
+             "data_info/radar_cov_test.npz from the CWD or repo root). Only "
+             "used with the v2 6-channel configs.",
     )
     parser.add_argument("--device", type=str, default=None,
                         help="cuda or cpu (auto-detected if not specified).")

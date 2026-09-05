@@ -4,8 +4,8 @@ Convert FlashEdges forecast GeoTIFFs into videos.
 
 FlashEdges inference (``backend/main.py``) writes, per forecast timestep:
 
-    forecast_{YYYYMMDDHHMM}_sat.tif    — 2 bands:
-        [gmgsi_lwir (IR), gmgsi_vis (VIS)]
+    forecast_{YYYYMMDDHHMM}_sat.tif    — 2 bands (v1) or 3 bands (v2):
+        [gmgsi_lwir (IR), gmgsi_vis (VIS)] (+ radar_dbz forecast band)
     forecast_{YYYYMMDDHHMM}_metar.tif  — 7 bands:
         [tmpc, dwpc, mslp, cloud_cover, p01m(dBZ), wind_u, wind_v]
 
@@ -157,11 +157,14 @@ LUT_RADAR = _custom_lut([  # dBZ: light blue -> green -> yellow -> orange -> red
 # ---------------------------------------------------------------------------
 # key -> dict(file=, band=, display=, unit=, vmin=, vmax=, lut=, percentile=)
 BANDS = {
-    # ---- satellite (_sat.tif, 2 bands: IR + VIS) ----
+    # ---- satellite (_sat.tif, 2 bands v1 / 3 bands v2) ----
     "gmgsi_lwir": dict(file="sat", band=1, display="GMGSI LWIR (IR)",   unit="",
                        vmin=None, vmax=None, lut=LUT_LWIR, percentile=True),
     "gmgsi_vis":  dict(file="sat", band=2, display="GMGSI VIS",         unit="",
                        vmin=None, vmax=None, lut=LUT_VIS,  percentile=True),
+    "radar_dbz":  dict(file="sat", band=3, display="Radar Forecast",    unit="dBZ",
+                       vmin=-5,   vmax=65,   lut=LUT_RADAR, percentile=False,
+                       optional=True),  # only in v2 (3-band) sat files; NaN outside coverage
     # ---- METAR (_metar.tif, 7 bands) ----
     "tmpc":        dict(file="metar", band=1, display="2m Temperature", unit="C",
                         vmin=-40, vmax=50,   lut=LUT_TEMP,  percentile=False),
@@ -312,6 +315,22 @@ def draw_overlay(frame, title, ts, sub=None):
 def load_band(path, band):
     with rasterio.open(path) as src:
         return src.read(band).astype(np.float32), src.transform
+
+
+def band_present(channels_files, cfg):
+    """True if the band's file exists and actually has that many bands
+    (guards optional bands, e.g. radar_dbz only in v2 3-band sat files)."""
+    import rasterio as _rio
+    for files in channels_files.values():
+        path = files.get(cfg["file"])
+        if path is None:
+            continue
+        try:
+            with _rio.open(path) as src:
+                return src.count >= cfg["band"]
+        except Exception:
+            continue
+    return False
 
 
 def compute_percentiles(channels_files, band_key, cfg):
@@ -512,6 +531,14 @@ def main():
             print(f"Error: unknown band '{c}'. Valid: {', '.join(BANDS)}",
                   file=sys.stderr)
             sys.exit(1)
+    # Drop optional bands absent from the files (e.g. radar in v1 sat tifs).
+    layout = [c for c in layout
+              if not BANDS[c].get("optional") or band_present(channels_files, BANDS[c])]
+    for c in ([x for x in args.channels.split(",")] if args.channels else []):
+        if c.strip() and c.strip() not in BANDS:
+            print(f"Error: unknown band '{c}'. Valid: {', '.join(BANDS)}",
+                  file=sys.stderr)
+            sys.exit(1)
 
     borders = None if args.no_coastlines else get_world_borders()
 
@@ -529,6 +556,9 @@ def main():
         for c in sel:
             if c not in BANDS:
                 print(f"  [skip] unknown band '{c}'")
+                continue
+            if BANDS[c].get("optional") and not band_present(channels_files, BANDS[c]):
+                print(f"  [skip] optional band '{c}' not present in files")
                 continue
             print(f"\n[{c}] rendering per-channel video ...")
             build_channel_video(channels_files, c, BANDS[c], out_dir, args.fps,

@@ -20,8 +20,24 @@ The H5 input format is produced by
 ``meteolibre_datasetgen.src.backend_flashedges.services``:
 
   sat_data        : (4, 4, 1800, 3600)   float16  — GMGSI
+  radar_data      : (4, 1, 1800, 3600)   float32  — OPERA+MRMS DBZH (dBZ),
+                                                    NaN = no coverage/echo
+                                                    (optional, v2 layout)
   metar_data      : (4, 7, 1800, 3600)   float32  — METAR, NaN where no station
   elevation_data  : (1800, 3600)         float32  — DEM
+
+Radar handling (v2 6-channel configs model_v5/v6_*): when the config's
+satellite branch carries the radar channel, ``radar_data`` is inserted
+between the GMGSI and elevation channels -- ``[gmgsi(4), radar(1),
+elevation(1)]``, exactly the layout of
+``dataset_global_satellite_metar_v2.preprocess_record`` -- after applying the
+same preprocessing as training (static coverage mask -> NaN outside radar
+coverage, dry-snap dBZ < 0.1 -> DRY_DBZ) and is normalized with
+``normalize_v2`` / ``denormalize_v2`` (SAT_MEAN_V2/SAT_STD_V2). A missing
+``radar_data`` dataset (v1 H5 files) degrades to an all-NaN radar channel:
+fully masked input, the model runs on satellite + elevation + METAR only.
+The radar FORECAST is written as a third band of the ``_sat.tif`` output
+(v2 layout only): [gmgsi_lwir, gmgsi_vis, radar_dbz], NaN outside coverage.
 
 Output: GeoTIFF forecast files per timestep, optionally converted to COG.
 """
@@ -63,10 +79,20 @@ from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 from meteolibre_model.diffusion.rectified_flow_satellite_metar_v1 import (
     normalize,
     denormalize,
+    normalize_v2,
+    denormalize_v2,
     CLIP_MIN,
     METAR_CLIP_MAX,
     structured_gaussian_noise,
     reconstruct_residual,
+)
+from meteolibre_model.dataset.dataset_global_satellite_metar import (
+    DRY_DBZ,
+    METAR_PRECIP_IDX,
+    mmh_to_dbz,
+)
+from meteolibre_model.dataset.dataset_global_satellite_metar_v2 import (
+    load_radar_coverage,
 )
 from safetensors.torch import load_file
 
@@ -86,6 +112,25 @@ NUM_METAR_CHANNELS = 7
 
 # Number of satellite channels (GMGSI 4 + elevation 1)
 NUM_SAT_CHANNELS = 5
+
+# v2 satellite layout: GMGSI(4) + radar(1) + elevation(1) = 6 channels
+# (mirrors dataset_global_satellite_metar_v2: sat_patch_data =
+# concat([sat, radar, elev], axis=1); configs model_v5/v6_*).
+NUM_SAT_CHANNELS_V2 = 6
+
+# Index of the radar channel within the v2 sat layout.
+RADAR_SAT_IDX = 4
+
+# Radar dry-snap threshold (dBZ): everything below (noise / ground clutter /
+# trace rain below Marshall-Palmer's validity floor) is snapped to DRY_DBZ,
+# the same "no rain" marker as the METAR p01m channel (see
+# dataset_global_satellite_metar_v2.preprocess_record).
+RADAR_DRY_SNAP_DBZ = 0.1
+
+# Physical dBZ clamp for the radar forecast band AFTER denormalization
+# (same range as the p01m clamp: DRY_DBZ=-5 dry .. 65 heavy rain/hail).
+RADAR_DBZ_MIN = -5.0   # DRY_DBZ
+RADAR_DBZ_MAX = 65.0
 
 # Index of the p01m channel within the METAR layout (matches
 # METAR_FEATURES = [tmpc, dwpc, mslp, cloud_cover, p01m, wind_u, wind_v]).
@@ -210,6 +255,7 @@ class FlashEdgesInferenceEngine:
         inference_seed: Optional[int] = None,
         mask_all_metar: bool = False,
         metar_keep_ratio: float = 0.0,
+        radar_cov_path: Optional[str] = None,
         device: Optional[str] = None,
     ):
         """
@@ -259,6 +305,11 @@ class FlashEdgesInferenceEngine:
                 the same positions across all METAR channels & forecast frames
                 (station-like dots, not per-channel noise). Ignored when
                 mask_all_metar=True.
+            radar_cov_path: Path to the packed radar coverage NPZ
+                (``data_info/radar_cov_test.npz``). Only used when the config's
+                satellite branch carries the radar channel (6ch, configs
+                model_v5/v6_*); None auto-resolves the default location (CWD
+                or repo root), like the v2 training dataset.
             device: 'cuda' or 'cpu' (auto-detected if None).
         """
         self.model_path = model_path
@@ -296,6 +347,116 @@ class FlashEdgesInferenceEngine:
 
         self._load_config()
         self._load_model()
+
+        # Channel counts come from the config so both the v1 (5ch sat:
+        # GMGSI + elevation) and v2 (6ch sat: GMGSI + radar + elevation)
+        # layouts are driven by the checkpoint's config entry (model_v3/v4_*
+        # vs model_v5/v6_*). This in turn selects the matching normalization
+        # stats (SAT_MEAN/SAT_STD vs SAT_MEAN_V2/SAT_STD_V2).
+        self.c_sat = int(self.params["model"].get("sat_in_channels", NUM_SAT_CHANNELS))
+        self.c_metar = int(
+            self.params["model"].get("kpi_in_channels", NUM_METAR_CHANNELS)
+        )
+        self.use_radar = self.c_sat >= NUM_SAT_CHANNELS_V2
+        self.radar_cov_path = radar_cov_path
+        # Lazy-loaded global radar coverage union (1800x3600 bool), see
+        # _load_radar_coverage().
+        self._radar_cov_union: Optional[np.ndarray] = None
+        if self.use_radar:
+            logger.info(
+                f"v2 6-channel satellite layout (radar at idx {RADAR_SAT_IDX}); "
+                "radar input enabled"
+            )
+
+    def _load_radar_coverage(self, transform: List[float], height: int = None, width: int = None) -> np.ndarray:
+        """Load the static OPERA+MRMS coverage union, validated against the
+        input grid, and cache it as ``self._radar_cov_union``.
+
+        Args:
+            transform: H5 geo transform [res, 0, lon_min, 0, -res, lat_max].
+            height, width: H5 grid dims (default: the full 1800x3600 global
+                grid; pass explicitly for sub-global windows).
+
+        Returns the (H, W) boolean array, True where the radar network covers.
+        The coverage NPZ lives on the same 0.1-degree global grid the H5 input
+        uses; sub-global H5 windows (same resolution) are cropped out of the
+        union, any other grid mismatch raises instead of silently masking the
+        wrong pixels.
+        """
+        cov = load_radar_coverage(self.radar_cov_path)
+        res, lon_min, lat_max = transform[0], transform[2], transform[5]
+        mismatches = []
+        # Resolution must match exactly (float32-scale tolerance: the NPZ
+        # stores 0.1 as 0.10000000149...). Origin/size mismatches are handled
+        # by the window crop below, NOT treated as errors.
+        if abs(cov.resolution - res) > 1e-6:
+            mismatches.append(f"resolution: cov={cov.resolution} vs h5={res}")
+        if mismatches:
+            raise ValueError(
+                "Radar coverage grid does not match the H5 input grid: "
+                + "; ".join(mismatches)
+            )
+
+        # Full global grid (the live-inference case): use the union as-is.
+        # Sub-global H5 windows (same resolution): crop the union to the
+        # window; the H5 window must lie inside the coverage grid.
+        h = int(round(180.0 / res)) if height is None else int(height)
+        w = int(round(360.0 / res)) if width is None else int(width)
+        if self._radar_cov_union is not None and self._radar_cov_union.shape == (h, w):
+            return self._radar_cov_union
+        if cov.height == h and cov.width == w and abs(cov.lon_min - lon_min) < 1e-4 \
+                and abs(cov.lat_max - lat_max) < 1e-4:
+            self._radar_cov_union = cov.union
+        else:
+            col0 = int(round((lon_min - cov.lon_min) / res))
+            row0 = int(round((cov.lat_max - lat_max) / res))
+            if not (
+                0 <= col0 and col0 + w <= cov.width
+                and 0 <= row0 and row0 + h <= cov.height
+            ):
+                raise ValueError(
+                    f"H5 grid window (lon_min={lon_min}, lat_max={lat_max}, "
+                    f"{h}x{w} px) does not fit inside the radar coverage grid "
+                    f"({cov.lon_min}..{cov.lon_min + cov.width * cov.resolution}, "
+                    f"{cov.lat_max - cov.height * cov.resolution}..{cov.lat_max})"
+                )
+            self._radar_cov_union = cov.union[
+                row0 : row0 + h, col0 : col0 + w
+            ]
+        return self._radar_cov_union
+
+    def _prepare_radar(self, radar: np.ndarray, transform: List[float]) -> np.ndarray:
+        """Preprocess the H5 radar band exactly like the v2 training dataset.
+
+        Args:
+            radar: (T, 1, H, W) or (T, H, W) float dBZ (OPERA + MRMS composite).
+            transform: H5 geo transform [res, 0, lon_min, 0, -res, lat_max].
+
+        Returns:
+            (T, 1, H, W) float32 NaN-encoded radar:
+              * pixels OUTSIDE the static coverage union -> NaN (no-data,
+                zeroed after normalize, exactly like training's sat_mask),
+              * pixels INSIDE coverage keep their dBZ, with everything below
+                RADAR_DRY_SNAP_DBZ snapped to DRY_DBZ (-5) -- the shared
+                "no rain" marker (NaN comparisons are False so NaN stays NaN).
+        """
+        radar = radar.astype(np.float32)
+        if radar.ndim == 3:  # (T, H, W) -> (T, 1, H, W)
+            radar = radar[:, None, :, :]
+        if radar.ndim != 4 or radar.shape[1] != 1:
+            raise ValueError(
+                f"radar_data must be (T, 1, H, W) or (T, H, W), got {radar.shape}"
+            )
+
+        covered = self._load_radar_coverage(transform, radar.shape[2], radar.shape[3])
+        if radar.shape[2:] != covered.shape:
+            raise ValueError(
+                f"radar_data grid {radar.shape[2:]} does not match the coverage "
+                f"grid {covered.shape} (H5 grid: {transform})"
+            )
+        radar = np.where(covered[None, None, :, :], radar, np.nan)
+        radar = np.where(radar < RADAR_DRY_SNAP_DBZ, DRY_DBZ, radar)
+        return radar
 
     def _load_config(self) -> None:
         """Load model configuration from configs.yml."""
@@ -442,8 +603,8 @@ class FlashEdgesInferenceEngine:
         forecast_steps: int = 3,
         nb_forecast: int = 3,
         date: Optional[datetime] = None,
-        c_sat: int = NUM_SAT_CHANNELS,
-        c_metar: int = NUM_METAR_CHANNELS,
+        c_sat: Optional[int] = None,
+        c_metar: Optional[int] = None,
         sat_nodata_mask: Optional[torch.Tensor] = None,
         metar_station_mask: Optional[torch.Tensor] = None,
     ) -> Generator[Tuple[torch.Tensor, torch.Tensor], None, None]:
@@ -451,12 +612,16 @@ class FlashEdgesInferenceEngine:
 
         Args:
             initial_context: (1, C, T_ctx, H, W) normalized context tensor.
-                Channel order: [sat(5), metar(7)].
+                Channel order: v2 [sat(6), metar(7)] with radar between GMGSI
+                and elevation, or v1 [sat(5), metar(7)].
             forecast_steps: Total number of forecast frames to produce.
             nb_forecast: Frames generated per model call (autoregressive batch).
             date: Datetime of the first context frame.
-            c_sat: Number of satellite channels (GMGSI + elevation = 5).
-            c_metar: Number of METAR channels (7).
+            c_sat: Number of satellite channels. None (default) uses the
+                config's ``sat_in_channels`` (5 for v1 GMGSI + elevation,
+                6 for v2 GMGSI + radar + elevation).
+            c_metar: Number of METAR channels (7). None uses the config's
+                ``kpi_in_channels``.
             sat_nodata_mask: (1, c_sat, T_ctx, H, W) boolean, True where sat
                 is no-data. Used to blank those pixels in the output.
             metar_station_mask: (1, 1, 1, H, W) boolean, True where a METAR
@@ -477,6 +642,13 @@ class FlashEdgesInferenceEngine:
         """
         if self.model is None:
             raise RuntimeError("Model not loaded")
+
+        # Config-driven channel counts: the v2 layout (6ch sat with radar)
+        # selects denormalize_v2 / SAT_MEAN_V2, matching run_inference's
+        # normalize_v2 on the input side.
+        c_sat = self.c_sat if c_sat is None else c_sat
+        c_metar = self.c_metar if c_metar is None else c_metar
+        use_radar_stats = c_sat >= NUM_SAT_CHANNELS_V2
 
         self.model.eval()
         self.model.to(self.device)
@@ -734,12 +906,21 @@ class FlashEdgesInferenceEngine:
                 last_ctx = current_context[:, :, -1:, :, :]
                 x_t = reconstruct_residual(x_t, last_ctx, c_sat, c_metar, self.device)
 
-            # Denormalize to physical units
+            # Denormalize to physical units (v2 6ch layout -> SAT_MEAN_V2 /
+            # SAT_STD_V2, matching the normalize_v2 used on the input side)
             sat_frame = x_t[:, :c_sat, :, :, :]
             metar_frame = x_t[:, c_sat:, :, :, :]
-            sat_denorm, metar_denorm = denormalize(sat_frame, metar_frame, self.device)
+            if use_radar_stats:
+                sat_frame, metar_frame = denormalize_v2(sat_frame, metar_frame, self.device)
+            else:
+                sat_frame, metar_frame = denormalize(sat_frame, metar_frame, self.device)
+            sat_denorm, metar_denorm = sat_frame, metar_frame
 
-            # Blank sat no-data pixels (GMGSI off-disk / polar gaps)
+            # Blank sat no-data pixels (GMGSI off-disk / polar gaps, and in
+            # the v2 layout also radar pixels outside the coverage union:
+            # missing radar is a no-data pixel exactly like off-disk GMGSI).
+            # The written radar forecast band is additionally masked to NaN
+            # outside coverage in _save_timestep_files.
             if sat_nodata_mask is not None:
                 nodata_last = sat_nodata_mask[:, :, -1:, :, :].expand_as(sat_denorm)
                 sat_denorm = torch.where(nodata_last, torch.zeros_like(sat_denorm), sat_denorm)
@@ -834,11 +1015,15 @@ class FlashEdgesInferenceEngine:
         geo_transform,
         crs: str,
         upload_fn: Optional[Callable[[str], None]] = None,
+        radar_cov: Optional[np.ndarray] = None,
     ) -> List[str]:
         """Write GeoTIFF files for one forecast timestep.
 
         Saves:
-          - One multi-band TIFF for satellite (2 channels: IR/LWIR + VIS)
+          - One multi-band TIFF for satellite: 2 bands v1
+            [gmgsi_lwir, gmgsi_vis], or 3 bands v2
+            [gmgsi_lwir, gmgsi_vis, radar_dbz] (the radar forecast band,
+            NaN outside the radar coverage union)
           - One multi-band TIFF for METAR (7 channels)
         """
         base_filename = f"forecast_{pred_date.strftime('%Y%m%d%H%M')}"
@@ -853,9 +1038,31 @@ class FlashEdgesInferenceEngine:
         if metar_np.ndim == 4:
             metar_np = metar_np[:, 0, :, :]  # (C_metar, H, W)
 
-        # Keep only the IR (LWIR, idx 0) and VIS (idx 1) satellite channels.
-        # Full sat layout is [gmgsi_lwir, gmgsi_vis, gmgsi_wv, gmgsi_sw, elevation].
-        sat_np = sat_np[:2]  # (2, H, W): [gmgsi_lwir, gmgsi_vis]
+        # Keep IR (LWIR, idx 0) + VIS (idx 1); in the v2 layout ALSO append
+        # the radar forecast (channel RADAR_SAT_IDX) as an extra sat band.
+        # Full sat layout is v1 [gmgsi_lwir, gmgsi_vis, gmgsi_wv, gmgsi_sw,
+        # elevation] or v2 [gmgsi_lwir, gmgsi_vis, gmgsi_wv, gmgsi_sw, radar,
+        # elevation] (radar between GMGSI and elevation, as in
+        # dataset_global_satellite_metar_v2). In the v1 5ch layout index 4 is
+        # ELEVATION, so gate on use_radar (the config-driven 6ch flag), not
+        # merely on the band count.
+        # Pixels OUTSIDE the static radar coverage union never had radar
+        # input, so the prediction there is hallucinated -- mask them to NaN
+        # nodata. Inside coverage, clamp to the physical dBZ range (np.clip
+        # propagates NaN, so the masked pixels stay NaN).
+        sat_np_orig = sat_np
+        sat_bands = ["gmgsi_lwir", "gmgsi_vis"]
+        if self.use_radar and sat_np_orig.shape[0] > RADAR_SAT_IDX:
+            radar_np = sat_np_orig[RADAR_SAT_IDX]  # (H, W)
+            if radar_cov is not None:
+                radar_np = np.where(radar_cov, radar_np, np.nan)
+            radar_np = np.clip(radar_np, RADAR_DBZ_MIN, RADAR_DBZ_MAX)
+            sat_np = np.concatenate(
+                [sat_np[:2], radar_np[None].astype(np.float32)], axis=0
+            )  # (3, H, W)
+            sat_bands.append("radar_dbz")
+        else:
+            sat_np = sat_np[:2]  # (2, H, W): [gmgsi_lwir, gmgsi_vis]
 
         common_kwargs = dict(
             driver='GTiff', crs=crs, transform=geo_transform,
@@ -864,7 +1071,7 @@ class FlashEdgesInferenceEngine:
 
         h, w = sat_np.shape[1], sat_np.shape[2]
 
-        # Satellite GeoTIFF (2 bands: IR + VIS)
+        # Satellite GeoTIFF (2 bands v1: IR + VIS; 3 bands v2: IR + VIS + radar)
         sat_path = os.path.join(output_dir, f"{base_filename}_sat.tif")
         with rasterio.open(
             sat_path, 'w', height=h, width=w,
@@ -873,6 +1080,7 @@ class FlashEdgesInferenceEngine:
         ) as dst:
             for ch in range(sat_np.shape[0]):
                 dst.write(sat_np[ch], ch + 1)
+                dst.set_band_description(ch + 1, sat_bands[ch])
         convert_to_cog(sat_path)
         if upload_fn:
             upload_fn(sat_path)
@@ -892,7 +1100,10 @@ class FlashEdgesInferenceEngine:
             upload_fn(metar_path)
         saved.append(metar_path)
 
-        logger.info(f"Saved forecast: {base_filename}_sat.tif + {base_filename}_metar.tif")
+        logger.info(
+            f"Saved forecast: {base_filename}_sat.tif ({len(sat_bands)} bands: "
+            f"{', '.join(sat_bands)}) + {base_filename}_metar.tif (7 bands)"
+        )
         return saved
 
     # ------------------------------------------------------------------ #
@@ -933,14 +1144,17 @@ class FlashEdgesInferenceEngine:
                 sat_data = hf["sat_data"][:]         # (T, 4, H, W) float16
                 metar_data = hf["metar_data"][:]     # (T, 7, H, W) float32
                 elevation_data = hf["elevation_data"][:]  # (H, W) float32
+                # Optional v2 radar band (OPERA+MRMS DBZH, NaN = no coverage /
+                # no echo), written by meteolibre_datasetgen's backend_global.
+                radar_data = hf["radar_data"][:] if "radar_data" in hf else None
 
                 num_frames = int(hf.attrs["num_frames"])
                 transform = list(hf.attrs["transform"])
                 epsg = int(hf.attrs["epsg"])
                 frame_timestamps = list(hf.attrs.get("frame_timestamps", []))
 
-            c_sat = NUM_SAT_CHANNELS   # 5 (GMGSI 4 + elevation 1)
-            c_metar = NUM_METAR_CHANNELS  # 7
+            c_sat = self.c_sat      # 5 (v1) or 6 (v2: GMGSI + radar + elevation)
+            c_metar = self.c_metar  # 7
 
             # --- p01m units: mm/h -> dBZ (match training) ---
             # The training dataset converts the p01m channel to radar
@@ -951,13 +1165,48 @@ class FlashEdgesInferenceEngine:
             # wrong units (dry feeds normalized +0.334 instead of -0.208),
             # driving the forecast off-manifold. NaN stations are preserved
             # (mmh_to_dbz only touches finite values).
-            from meteolibre_model.dataset.dataset_global_satellite_metar import (
-                mmh_to_dbz, METAR_PRECIP_IDX,
-            )
             p01m = metar_data[:, METAR_PRECIP_IDX]
             finite = ~np.isnan(p01m)
             p01m[finite] = mmh_to_dbz(p01m[finite])
             metar_data[:, METAR_PRECIP_IDX] = p01m
+
+            # --- Radar band (v2 6ch satellite branch only) ---
+            # Applied preprocessing mirrors dataset_global_satellite_metar_v2:
+            # pixels outside the static OPERA+MRMS coverage union -> NaN,
+            # everything below 0.1 dBZ (noise/clutter/trace) snapped to
+            # DRY_DBZ (-5). NaN radar is a no-data pixel like GMGSI off-disk:
+            # captured in sat_nodata_mask and zeroed AFTER normalize_v2, so a
+            # v1 H5 (no radar_data) cleanly degrades to "no radar input".
+            if self.use_radar:
+                if radar_data is None:
+                    logger.warning(
+                        "Config uses the v2 6-channel satellite layout but the "
+                        "H5 has no radar_data: radar context fully masked "
+                        "(all-NaN -> 0 after normalize_v2); conditioning on "
+                        "satellite + elevation + METAR only."
+                    )
+                    radar_data = np.full(
+                        (num_frames, 1) + sat_data.shape[2:], np.nan, dtype=np.float32
+                    )
+                else:
+                    radar_data = self._prepare_radar(radar_data, transform)
+                    nan_frac = float(np.mean(np.isnan(radar_data)))
+                    logger.info(
+                        f"radar_data: {radar_data.shape} dBZ, "
+                        f"{100.0 * (1.0 - nan_frac):.2f}% valid pixels"
+                    )
+                # Coverage union is also used to mask the written radar
+                # forecast band to NaN outside coverage (see
+                # _save_timestep_files).
+                self._load_radar_coverage(
+                    transform, sat_data.shape[2], sat_data.shape[3]
+                )
+            elif radar_data is not None:
+                logger.info(
+                    "H5 carries radar_data but config is the v1 5-channel "
+                    "layout; ignoring the radar band."
+                )
+                radar_data = None
 
             if num_frames < self.context_frames:
                 raise ValueError(
@@ -978,7 +1227,16 @@ class FlashEdgesInferenceEngine:
 
             logger.info(f"Input H5: {num_frames} frames, ref date {initial_date}")
             logger.info(f"  sat_data: {sat_data.shape}, metar_data: {metar_data.shape}")
-            logger.info(f"  elevation: {elevation_data.shape}")
+            logger.info(
+                f"  radar_data: {radar_data.shape if radar_data is not None else '<absent>'}, "
+                f"elevation: {elevation_data.shape}"
+            )
+            logger.info(
+                f"  context channels: sat {c_sat} "
+                + ("(GMGSI 4 + radar 1 + elevation 1)" if self.use_radar
+                   else "(GMGSI 4 + elevation 1)")
+                + f" + metar {c_metar}"
+            )
 
             # --- Build initial context tensor ---
             # sat_mask: True where GMGSI data is valid (not NaN)
@@ -991,10 +1249,22 @@ class FlashEdgesInferenceEngine:
                 metar_frame = metar_data[i].astype(np.float32)  # (7, H, W)
                 elev_frame = elevation_data[None, :, :]  # (1, H, W)
 
-                # Capture sat no-data mask BEFORE filling NaN (all 5 sat
-                # channels, matching training's sat_mask over GMGSI + elevation)
+                # Capture sat no-data mask BEFORE filling NaN (all sat
+                # channels, matching training's sat_mask over GMGSI + elevation
+                # (+ radar in the v2 layout))
                 sat_valid = ~np.isnan(sat_frame)
                 sat_frame = np.where(np.isnan(sat_frame), 0.0, sat_frame)
+
+                # Radar frame (v2 only): NaN = no coverage / missing frame /
+                # v1 H5 fallback -- a no-data pixel exactly like GMGSI
+                # off-disk, so it joins the sat no-data mask and is zeroed
+                # after normalize_v2 (training fed radar exactly this way:
+                # sat_patch NaN -> sat_mask -> 0 after normalize).
+                radar_frame = None
+                radar_valid = None
+                if self.use_radar:
+                    radar_frame = radar_data[i].astype(np.float32)  # (1, H, W)
+                    radar_valid = ~np.isnan(radar_frame)
 
                 # Elevation floor (FlashNet/dataset convention). NaN survives
                 # `elev < 0` (NaN comparisons are False in numpy), so fill NaN
@@ -1011,19 +1281,30 @@ class FlashEdgesInferenceEngine:
                 metar_valid = ~np.isnan(metar_frame)
                 metar_frame = np.where(np.isnan(metar_frame), METAR_NAN_SENTINEL, metar_frame)
 
-                # Concatenate: [sat(4) + elev(1) | metar(7)] = 12 channels
-                sat_elev = np.concatenate([sat_frame, elev_frame], axis=0)  # (5, H, W)
-                frame = np.concatenate([sat_elev, metar_frame], axis=0)[None, ...]  # (1, 12, H, W)
+                # Concatenate: v2 [sat(4) + radar(1) + elev(1) | metar(7)] = 13
+                # channels, v1 [sat(4) + elev(1) | metar(7)] = 12 channels.
+                # Radar sits between GMGSI and elevation, matching
+                # dataset_global_satellite_metar_v2 (concat([sat, radar, elev],
+                # axis=1)) so the checkpoint's channel order is identical to
+                # training.
+                if self.use_radar:
+                    sat_dense = np.concatenate(
+                        [sat_frame, radar_frame, elev_frame], axis=0
+                    )  # (6, H, W)
+                    sat_invalid = np.concatenate(
+                        [~sat_valid, ~radar_valid, ~elev_valid], axis=0
+                    )  # (6, H, W): no-data mask over ALL sat channels
+                else:
+                    sat_dense = np.concatenate([sat_frame, elev_frame], axis=0)  # (5, H, W)
+                    sat_invalid = np.concatenate([~sat_valid, ~elev_valid], axis=0)
+                frame = np.concatenate([sat_dense, metar_frame], axis=0)[None, ...]
                 initial_frames.append(frame)
-                # (1, 5, H, W): no-data mask over ALL sat channels incl. elevation
-                sat_nodata_masks.append(
-                    np.concatenate([~sat_valid, ~elev_valid], axis=0)[None, ...]
-                )
+                sat_nodata_masks.append(sat_invalid[None, ...])
 
-            current_context = np.stack(initial_frames, axis=2)  # (1, 12, T_ctx, H, W)
+            current_context = np.stack(initial_frames, axis=2)  # (1, 12|13, T_ctx, H, W)
             current_context = torch.from_numpy(current_context).float().to(self.device)
 
-            sat_nodata_mask = np.stack(sat_nodata_masks, axis=2)  # (1, 5, T_ctx, H, W)
+            sat_nodata_mask = np.stack(sat_nodata_masks, axis=2)  # (1, 5|6, T_ctx, H, W)
             sat_nodata_mask = torch.from_numpy(sat_nodata_mask).to(self.device)
 
             # --- Normalize ---
@@ -1036,7 +1317,9 @@ class FlashEdgesInferenceEngine:
                 metar_valid, metar_tensor, torch.zeros_like(metar_tensor)
             )
 
-            sat_tensor, metar_tensor = normalize(sat_tensor, metar_tensor, self.device)
+            sat_tensor, metar_tensor = normalize_v2(sat_tensor, metar_tensor, self.device) \
+                if self.use_radar \
+                else normalize(sat_tensor, metar_tensor, self.device)
             # Zero out no-data pixels after normalize (sentinel = neutral mean 0)
             sat_tensor = torch.where(
                 ~sat_nodata_mask, sat_tensor, torch.zeros_like(sat_tensor)
@@ -1098,6 +1381,7 @@ class FlashEdgesInferenceEngine:
                             self._save_timestep_files,
                             sat_frame, metar_frame,
                             output_dir, pred_date, geo_transform, crs, upload_fn,
+                            self._radar_cov_union,  # None unless v2 6ch layout
                         )
                         pending_futures.append(fut)
 

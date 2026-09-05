@@ -52,6 +52,10 @@ class ModelConfig(BaseModel):
     # feedback, in addition to real station positions (0.0 = strict
     # re-sparsification; ~0.05 stabilizes station-sparse patches).
     metar_keep_ratio: float = 0.0
+    # Path to the packed radar coverage NPZ used to mask the radar channel
+    # (v2 6-channel configs only). None auto-resolves data_info/radar_cov_test.npz
+    # from the CWD or the repo root (same resolution as the v2 training dataset).
+    radar_cov_path: Optional[str] = None
 
 
 class CacheConfig(BaseModel):
@@ -104,6 +108,7 @@ class Config(BaseModel):
                 inference_seed=(int(os.getenv("INFERENCE_SEED", "128"))
                                 if os.getenv("INFERENCE_SEED") not in (None, "") else None),
                 metar_keep_ratio=float(os.getenv("METAR_KEEP_RATIO", "0.0")),
+                radar_cov_path=os.getenv("RADAR_COV_PATH") or None,
             ),
             cache=CacheConfig(
                 cache_dir=os.getenv("CACHE_DIR", "/tmp/flashedges_cache"),
