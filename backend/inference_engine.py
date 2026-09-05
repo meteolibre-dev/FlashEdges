@@ -438,7 +438,11 @@ class FlashEdgesInferenceEngine:
                 zeroed after normalize, exactly like training's sat_mask),
               * pixels INSIDE coverage keep their dBZ, with everything below
                 RADAR_DRY_SNAP_DBZ snapped to DRY_DBZ (-5) -- the shared
-                "no rain" marker (NaN comparisons are False so NaN stays NaN).
+                "no rain" marker. NaN pixels in the H5 composite inside
+                coverage (no-data over sea / gaps in the network footprint)
+                are read as "dry" and snapped to DRY_DBZ as well: only the
+                global coverage union masks the radar, never the H5's own
+                NaN holes.
         """
         radar = radar.astype(np.float32)
         if radar.ndim == 3:  # (T, H, W) -> (T, 1, H, W)
@@ -454,8 +458,13 @@ class FlashEdgesInferenceEngine:
                 f"radar_data grid {radar.shape[2:]} does not match the coverage "
                 f"grid {covered.shape} (H5 grid: {transform})"
             )
+        # Inside the coverage union the H5's own NaN holes mean "no echo"
+        # (dry), not no-data: snap them to DRY_DBZ like every other sub-
+        # threshold pixel. OUTSIDE the union the radar is masked to NaN
+        # (no-data, zeroed after normalize like training's sat_mask).
+        radar = np.where(radar < RADAR_DRY_SNAP_DBZ, DRY_DBZ, radar)  # NaN: cmp False
+        radar = np.where(np.isnan(radar), DRY_DBZ, radar)
         radar = np.where(covered[None, None, :, :], radar, np.nan)
-        radar = np.where(radar < RADAR_DRY_SNAP_DBZ, DRY_DBZ, radar)
         return radar
 
     def _load_config(self) -> None:

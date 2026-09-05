@@ -312,6 +312,49 @@ def draw_overlay(frame, title, ts, sub=None):
     return out
 
 
+def draw_legend(frame, cfg, vmin, vmax):
+    """Vertical colourbar legend on the right edge: gradient strip + ticks + unit."""
+    if vmax is None or vmin is None or vmax <= vmin:
+        return frame
+    h, w = frame.shape[:2]
+    s = max(w / 1280.0, 0.5)
+    bar_w = max(14, round(16 * s))
+    bar_h = int(h * 0.55)
+    pad = max(8, round(14 * s))
+    x0 = w - pad - bar_w
+    y0 = (h - bar_h) // 2
+
+    # gradient strip: LUT index 0 = low value -> place low value at the bottom
+    lut_rgb = cfg["lut"][:, :3][..., ::-1]        # RGB -> BGR
+    strip = cv2.resize(lut_rgb.reshape(256, 1, 3), (bar_w, bar_h),
+                       interpolation=cv2.INTER_LINEAR)
+    frame[y0:y0 + bar_h, x0:x0 + bar_w] = strip[::-1]
+    cv2.rectangle(frame, (x0 - 1, y0 - 1), (x0 + bar_w, y0 + bar_h),
+                  (200, 200, 200), 1)
+
+    # ticks (5 values, bottom -> top)
+    fs = 0.4 * s
+    th = 1
+    decimals = 1 if (vmax - vmin) < 4 else 0
+    for i in range(5):
+        frac = i / 4
+        val = vmin + (vmax - vmin) * frac
+        ty = y0 + int(round((1 - frac) * (bar_h - 1)))
+        cv2.line(frame, (x0 - 5, ty), (x0 - 1, ty), (200, 200, 200), 1)
+        label = f"{val:.{decimals}f}"
+        (tw, tth), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
+        cv2.putText(frame, label, (x0 - 9 - tw, ty + tth // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255), th, cv2.LINE_AA)
+
+    # unit label above the bar
+    unit = cfg.get("unit")
+    if unit:
+        (uw, uh), _ = cv2.getTextSize(unit, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
+        cv2.putText(frame, unit, (x0 + bar_w // 2 - uw // 2, y0 - uh - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255), th, cv2.LINE_AA)
+    return frame
+
+
 def load_band(path, band):
     with rasterio.open(path) as src:
         return src.read(band).astype(np.float32), src.transform
@@ -379,7 +422,8 @@ def resize_to(frame, target_w):
 # Build a single channel's frame sequence
 # ---------------------------------------------------------------------------
 def build_channel_video(channels_files, band_key, cfg, out_dir, fps,
-                        borders_gdf, crop_bounds, panel_w, title_suffix=""):
+                        borders_gdf, crop_bounds, panel_w, title_suffix="",
+                        legend=True):
     entries = sorted(channels_files.items())
     vmin, vmax = cfg["vmin"], cfg["vmax"]
     if cfg["percentile"]:
@@ -401,6 +445,8 @@ def build_channel_video(channels_files, band_key, cfg, out_dir, fps,
         bgr = render_band(arr, cfg["lut"], vmin, vmax)
         bgr = draw_coastlines(bgr, transform, borders_gdf)
         bgr = resize_to(bgr, panel_w)
+        if legend:
+            bgr = draw_legend(bgr, cfg, vmin, vmax)
         bgr = draw_overlay(bgr, title, ts)
         frames.append(bgr)
         if (i + 1) % 10 == 0:
@@ -414,7 +460,7 @@ def build_channel_video(channels_files, band_key, cfg, out_dir, fps,
 
 
 def build_combined_video(channels_files, layout, out_dir, fps,
-                         borders_gdf, crop_bounds, panel_w):
+                         borders_gdf, crop_bounds, panel_w, legend=True):
     entries = sorted(channels_files.items())
     # layout: list of band keys or None (pad to 4 slots)
     slots = (layout + [None] * 4)[:4]
@@ -450,6 +496,8 @@ def build_combined_video(channels_files, layout, out_dir, fps,
             bgr = render_band(arr, cfg["lut"], *ranges[k])
             bgr = draw_coastlines(bgr, transform, borders_gdf)
             bgr = resize_to(bgr, panel_w)
+            if legend:
+                bgr = draw_legend(bgr, cfg, *ranges[k])
             bgr = draw_overlay(bgr, cfg["display"], ts)
             panels.append(bgr)
 
@@ -504,6 +552,8 @@ def main():
                          "tropics) or lon_min,lat_min,lon_max,lat_max")
     ap.add_argument("--no-coastlines", action="store_true",
                     help="Do not draw coastlines")
+    ap.add_argument("--no-legend", action="store_true",
+                    help="Do not draw the colourbar legend on each panel")
     args = ap.parse_args()
 
     tiff_dir = args.tiff_dir.resolve()
@@ -548,7 +598,8 @@ def main():
                   f"designed for 4 (continuing anyway)")
         print("\n[combined] building multi-panel video ...")
         build_combined_video(channels_files, layout, out_dir, args.fps,
-                             borders, crop_bounds, args.panel_width)
+                             borders, crop_bounds, args.panel_width,
+                             legend=not args.no_legend)
 
     if args.per_channel:
         sel = ([c.strip() for c in args.channels.split(",")]
@@ -562,7 +613,8 @@ def main():
                 continue
             print(f"\n[{c}] rendering per-channel video ...")
             build_channel_video(channels_files, c, BANDS[c], out_dir, args.fps,
-                                borders, crop_bounds, args.panel_width)
+                                borders, crop_bounds, args.panel_width,
+                                legend=not args.no_legend)
 
     print("\nDone.")
 
