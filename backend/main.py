@@ -258,7 +258,7 @@ def main():
     parser.add_argument("--output_dir", type=str, default="forecasts",
                         help="Directory to save GeoTIFF outputs (local mode).")
     parser.add_argument("--config_name", type=str,
-                        default="model_v4_global_satellite_metar",
+                        default="model_v5_global_satellite_metar",
                         help="Config key in meteolibre_model/config/configs.yml. "
                              "model_v5/v6_* are the v2 6-channel layouts "
                              "(GMGSI 4 + radar 1 + elevation 1) that consume "

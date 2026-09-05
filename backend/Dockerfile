@@ -59,7 +59,7 @@ ENV GCP_DEST_BUCKET=inference_result_flashedges_forecast
 ENV GCP_DEST_PREFIX=forecasts
 
 # Inference hyperparameters (match the training config of the checkpoint).
-ENV CONFIG_NAME=model_v4_global_satellite_metar
+ENV CONFIG_NAME=model_v5_global_satellite_metar
 ENV PATCH_SIZE=128
 ENV DENOISING_STEPS=16
 ENV BATCH_SIZE=64
