@@ -43,7 +43,17 @@ pip install --user --no-cache-dir \
 #    --hf_dataset_repo meteolibre-dev/global_sat_metar
 
 # Option B — use the data you already downloaded locally:
+# v7 = v5 + adaLN(-Zero) per-block conditioning (+~8.6M params).
+# Fine-tune-safe: adaln_gate_init=1.0 + cond_additive=true make the new heads
+# exact identities at init, so resuming models/checkpoint.safetensors (loaded
+# strict=False) reproduces the pre-adaLN model bit-for-bit and adaLN learns on
+# top. For training from scratch use a config with cond_additive=false +
+# adaln_gate_init=0.0 (canonical adaLN-Zero).
+# NOTE lineage: v7 has sat_in_channels=6 (raar, like v5). To resume the
+# 12-channel checkpoints (checkpoint_21aug_prettygood / base17aug / peftfine,
+# sat_in=5) use --config model_v8_global_satellite_metar instead.
 python3 scripts/train_rf_satellite_metar.py \
+     --config model_v7_global_satellite_metar \
      --dataset_path "$DATA_DIR/"
 
 # Option C — multi-GPU: set --gpus=4 above, then use accelerate launch:

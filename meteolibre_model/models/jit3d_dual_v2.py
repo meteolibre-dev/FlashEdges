@@ -29,6 +29,17 @@ class DualJiT3D(nn.Module):
         kpi_head_hidden_dim: int = 64,
         kpi_head_kernel: int = 3,
         kpi_head_layers: int = 2,
+        # --- adaLN(-Zero) conditioning (passed through to JiT3D_Modern) ---
+        # Defaults keep the legacy behavior (additive conditioning, no adaLN).
+        # Fine-tune recipe: use_adaln=True + cond_additive=True +
+        # adaln_gate_init=1.0 -> exact no-op at resume from a pre-adaLN
+        # checkpoint (strict=False), adaLN capacity grows on top.
+        # Scratch recipe: use_adaln=True + cond_additive=False +
+        # adaln_gate_init=0.0 -> canonical adaLN-Zero.
+        use_adaln: bool = False,
+        cond_additive: bool = True,
+        adaln_rank: int = 128,
+        adaln_gate_init: float = 1.0,
     ):
         super().__init__()
         self.sat_out_channels = sat_out_channels
@@ -49,6 +60,10 @@ class DualJiT3D(nn.Module):
             kpi_head_hidden_dim=kpi_head_hidden_dim,
             kpi_head_kernel=kpi_head_kernel,
             kpi_head_layers=kpi_head_layers,
+            use_adaln=use_adaln,
+            cond_additive=cond_additive,
+            adaln_rank=adaln_rank,
+            adaln_gate_init=adaln_gate_init,
         )
 
     def forward(

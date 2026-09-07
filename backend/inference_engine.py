@@ -535,7 +535,24 @@ class FlashEdgesInferenceEngine:
 
         if os.path.exists(self.model_path):
             loaded_state_dict = load_file(self.model_path)
-            self.model.load_state_dict(loaded_state_dict)
+            # strict=False: tolerate architecture migrations in either
+            # direction -- an adaLN checkpoint loaded with use_adaln unset
+            # (extra keys ignored) or a pre-adaLN checkpoint loaded into an
+            # adaLN model (new heads keep their zero/identity init and act as
+            # exact no-ops). Same policy as every training script's resume.
+            missing, unexpected = self.model.load_state_dict(
+                loaded_state_dict, strict=False
+            )
+            if missing:
+                logger.warning(
+                    f"{len(missing)} missing key(s) in checkpoint (kept fresh "
+                    f"init): e.g. {missing[:5]}"
+                )
+            if unexpected:
+                logger.warning(
+                    f"{len(unexpected)} unexpected key(s) in checkpoint "
+                    f"(ignored): e.g. {unexpected[:5]}"
+                )
             logger.info(f"Loaded model weights from {self.model_path}")
         else:
             logger.warning(

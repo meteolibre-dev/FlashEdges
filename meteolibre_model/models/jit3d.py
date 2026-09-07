@@ -30,6 +30,45 @@ class SwiGLU(nn.Module):
     def forward(self, x):
         return self.w3(F.silu(self.w1(x)) * self.w2(x))
 
+class AdaLNModulation(nn.Module):
+    """Low-rank adaLN modulation head (DiT-style conditioning).
+
+    Consumes the SHARED conditioning vector ``c`` (B, dim) produced by
+    ``JiT3D_Modern.context_mlp`` (diffusion timestep + sun/lat/spatial
+    scalars) and regresses ``n_params * dim`` modulation values: per-block
+    heads use n_params=6 -> (shift, scale, gate) for the attention sub-layer
+    and (shift, scale, gate) for the MLP sub-layer; the final-layer head uses
+    n_params=2 -> (shift, scale) applied to ``norm_final``'s output.
+
+    Low-rank for parameter efficiency: SiLU -> Linear(dim, rank, no bias) ->
+    Linear(rank, n_params*dim). At dim=768, rank=128, a 6-param head costs
+    ~0.7M/block (+8.3M over 12 blocks) vs ~3.5M/block (+42M) for the
+    full-rank DiT head.
+
+    Init contract: ``JiT3D_Modern._init_adaln_heads`` runs AFTER the global
+    ``initialize_weights()`` (whose trunc_normal would otherwise overwrite
+    this head) and zeros ``up`` so the head emits only its bias at init:
+    shift=0, scale=0, gate=``gate_init``. With gate_init=1.0 the modulated
+    block is EXACTLY the un-modulated post-LN block (bit-for-bit resume no-op
+    when fine-tuning from a pre-adaLN checkpoint via strict=False); with
+    gate_init=0.0 every block is the identity at init (canonical adaLN-Zero,
+    for training from scratch).
+    """
+
+    def __init__(self, dim, n_params, rank=128, gate_init=0.0, gate_idx=()):
+        super().__init__()
+        self.dim = dim
+        self.n_params = int(n_params)
+        self.gate_init = float(gate_init)
+        self.gate_idx = tuple(int(i) for i in gate_idx)
+        self.silu = nn.SiLU()
+        self.down = nn.Linear(dim, rank, bias=False)
+        self.up = nn.Linear(rank, self.n_params * dim)
+
+    def forward(self, c):
+        # c: (B, dim) -> (B, n_params, dim)
+        return self.up(self.silu(self.down(c))).view(-1, self.n_params, self.dim)
+
 # ==============================================================================
 # == 2. 3D Rotary Positional Embeddings (Axial RoPE)
 # ==============================================================================
@@ -210,7 +249,8 @@ class JiTAttention(nn.Module):
 class JiTBlock(nn.Module):
     def __init__(self, dim, num_heads, mlp_ratio=4.0,
                  kv_ctx_noise=0.0, block_causal=False, prefix_attn=False,
-                 tokens_per_frame=1, n_ctx_tokens=0, seq_len=None):
+                 tokens_per_frame=1, n_ctx_tokens=0, seq_len=None,
+                 use_adaln=False, adaln_rank=128, adaln_gate_init=1.0):
         super().__init__()
         self.norm1 = RMSNorm(dim)
         self.attn = JiTAttention(dim, num_heads, qk_norm=True,
@@ -223,10 +263,33 @@ class JiTBlock(nn.Module):
         self.norm2 = RMSNorm(dim)
         hidden_dim = int(dim * mlp_ratio)
         self.mlp = SwiGLU(dim, hidden_dim, dim)
+        # adaLN modulation head: regresses (shift, scale, gate) x2 from the
+        # shared conditioning vector. None -> classic post-LN block (the
+        # pre-adaLN code path, numerically unchanged). Gate slots are params
+        # #2 and #5 of the 6-vector (DiT convention: shift_msa, scale_msa,
+        # gate_msa, shift_mlp, scale_mlp, gate_mlp).
+        self.adaln = (
+            AdaLNModulation(dim, n_params=6, rank=adaln_rank,
+                            gate_init=adaln_gate_init, gate_idx=(2, 5))
+            if use_adaln else None
+        )
 
-    def forward(self, x, rope_module, T, H, W, ctx_noise_scale=None):
-        x = x + self.attn(self.norm1(x), rope_module, T, H, W, ctx_noise_scale)
-        x = x + self.mlp(self.norm2(x))
+    def forward(self, x, rope_module, T, H, W, ctx_noise_scale=None, c=None):
+        if self.adaln is not None:
+            # c: (B, D) shared conditioning vector (timestep + global scalars).
+            # Each modulation param is (B, 1, D) -> broadcast over the N tokens:
+            # ALL tokens of a sample share the modulation (global conditioning,
+            # as in DiT). At the identity init (scale=shift=0, gate=1) this is
+            # bit-for-bit the else-branch below.
+            shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = \
+                self.adaln(c).unsqueeze(1).unbind(dim=2)
+            h = self.norm1(x) * (1.0 + scale_a) + shift_a
+            x = x + gate_a * self.attn(h, rope_module, T, H, W, ctx_noise_scale)
+            h = self.norm2(x) * (1.0 + scale_m) + shift_m
+            x = x + gate_m * self.mlp(h)
+        else:
+            x = x + self.attn(self.norm1(x), rope_module, T, H, W, ctx_noise_scale)
+            x = x + self.mlp(self.norm2(x))
         return x
 
 # ==============================================================================
@@ -282,6 +345,29 @@ class JiT3D_Modern(nn.Module):
         kv_ctx_noise: float = 0.,
         block_causal: bool = False,
         prefix_attn: bool = False,
+        # --- adaLN(-Zero) conditioning (DiT-style per-block modulation) ---
+        # use_adaln: give EVERY block a low-rank head regressing (shift, scale,
+        #   gate) x2 from the shared conditioning vector (diffusion t +
+        #   sun/lat/spatial), plus a (shift, scale) head on norm_final. This
+        #   replaces the single additive input bias as the primary conditioning
+        #   path: instead of being injected once and diluted over 12 blocks,
+        #   the timestep re-enters at every block and gates control residual
+        #   strength (DiT ablations: adaLN-Zero > cross-attn > in-context >
+        #   additive).
+        # cond_additive: keep the legacy `x = patch_embed(x) + c_emb` input
+        #   bias. FINE-TUNE recipe (defaults): cond_additive=True with
+        #   adaln_gate_init=1.0 -> resuming a pre-adaLN checkpoint with
+        #   strict=False reproduces its outputs BIT-FOR-BIT (the new heads are
+        #   exact identities) and adaLN capacity grows on top.
+        #   SCRATCH recipe: cond_additive=False with adaln_gate_init=0.0 ->
+        #   canonical adaLN-Zero (blocks start as identity; conditioning flows
+        #   only through the modulation heads).
+        # adaln_rank: low-rank bottleneck of the heads (+~8.6M params at 768/128).
+        # adaln_gate_init: initial residual-gate value (see recipes above).
+        use_adaln: bool = False,
+        cond_additive: bool = True,
+        adaln_rank: int = 128,
+        adaln_gate_init: float = 1.0,
         # --- ConvGRU KPI head (replaces the gated-persistence path) ---
         # When the kpi branch has a raw-METAR skip (kpi_in_channels > 0), the
         # decoder is a ConvGRU refinement head (see convgru.py) instead of a
@@ -302,6 +388,14 @@ class JiT3D_Modern(nn.Module):
         self.kv_ctx_noise = kv_ctx_noise
         self.block_causal = block_causal
         self.prefix_attn = prefix_attn
+        self.use_adaln = bool(use_adaln)
+        self.cond_additive = bool(cond_additive)
+        if not (self.use_adaln or self.cond_additive):
+            raise ValueError(
+                "JiT3D_Modern needs at least one conditioning path: set "
+                "use_adaln=True and/or cond_additive=True (otherwise the "
+                "diffusion timestep is invisible to the model)."
+            )
 
         # Spatial tokens per frame (with temporal patch_size=1)
         self.tokens_per_frame = (img_size[1] // patch_size[1]) * (img_size[2] // patch_size[2])
@@ -338,11 +432,21 @@ class JiT3D_Modern(nn.Module):
                     prefix_attn=prefix_attn,
                     tokens_per_frame=self.tokens_per_frame,
                     n_ctx_tokens=self.n_ctx_tokens,
-                    seq_len=seq_len)
+                    seq_len=seq_len,
+                    use_adaln=use_adaln, adaln_rank=adaln_rank,
+                    adaln_gate_init=adaln_gate_init)
             for _ in range(depth)
         ])
 
         self.norm_final = RMSNorm(embed_dim)
+        # Final-layer adaLN modulation (shift, scale only -- no gate): applied
+        # to norm_final's output before the decoder head(s), DiT-style. Fully
+        # zero-initialized (see _init_adaln_heads) so it starts as an exact
+        # identity regardless of adaln_gate_init.
+        self.adaLN_final = (
+            AdaLNModulation(embed_dim, n_params=2, rank=adaln_rank)
+            if self.use_adaln else None
+        )
         # Decoder: optionally two independent FinalLayer heads (one per
         # branch) instead of one shared head. With a shared head, the Linear
         # that reconstructs each 8x8 patch is optimized jointly by the sat and
@@ -421,6 +525,10 @@ class JiT3D_Modern(nn.Module):
         # (the absent metar-head keys are never overwritten). Kaiming He
         # (fan_in, relu) gives the ConvGRU gates a well-conditioned start.
         self._init_metar_head_kaiming()
+        # Re-initialize the adaLN modulation heads AFTER the global init (which
+        # trunc_normal-overwrites every Linear): zero up-projections restore
+        # the identity-at-init contract (see AdaLNModulation docstring).
+        self._init_adaln_heads()
 
         # NOTE: the old gated-blend gate_proj zero/negative-bias init is gone --
         # the ConvGRU head is randomly initialized and learns from scratch
@@ -460,6 +568,34 @@ class JiT3D_Modern(nn.Module):
                 if getattr(m, "bias", None) is not None:
                     nn.init.constant_(m.bias, 0.0)
 
+    def _init_adaln_heads(self):
+        """Zero-init for ALL adaLN modulation heads (no-op when use_adaln=False).
+
+        ``initialize_weights`` applies trunc_normal(0.02) to every Linear,
+        including the new heads; this restores the identity-at-init property:
+        ``up.weight = 0``, ``up.bias = 0`` except the gate slots, which are
+        set to the head's ``gate_init``. Consequences at init:
+          * gate_init=1.0 (fine-tune): scale=shift=0, gate=1 -> each block is
+            EXACTLY the pre-adaLN post-LN block; a strict=False resume of an
+            old checkpoint reproduces its outputs bit-for-bit.
+          * gate_init=0.0 (scratch): gate=0 -> blocks are the identity
+            (canonical adaLN-Zero); gradients still flow into up.weight (and
+            into down/context_mlp once up.weight moves off zero).
+        The final-layer head (n_params=2, no gates) is fully zeroed: identity.
+        """
+        if not self.use_adaln:
+            return
+        heads = [b.adaln for b in self.blocks]
+        if self.adaLN_final is not None:
+            heads.append(self.adaLN_final)
+        for head in heads:
+            nn.init.zeros_(head.up.weight)
+            nn.init.zeros_(head.up.bias)
+            if head.gate_init != 0.0:
+                with torch.no_grad():
+                    for gi in head.gate_idx:
+                        head.up.bias[gi * head.dim:(gi + 1) * head.dim] = head.gate_init
+
     def get_sinusoidal_time(self, t):
         device = t.device
         half_dim = 64 // 2
@@ -478,15 +614,19 @@ class JiT3D_Modern(nn.Module):
         """
         B, C, T, H, W = x.shape
 
-        # 1. Context conditioning
+        # 1. Context conditioning: ONE shared conditioning vector (B, D) from
+        # the diffusion timestep + global scalars (sun/lat/spatial). Feeds the
+        # legacy additive input bias (cond_additive) and/or the per-block
+        # adaLN modulation heads (use_adaln) -- same embedding, two paths.
         time_val = t[:, -1]
         t_emb = self.get_sinusoidal_time(time_val)
         combined = torch.cat([t[:, :-1], t_emb], dim=1)
-        c_emb = self.context_mlp(combined).unsqueeze(1)  # (B, 1, D)
+        c_vec = self.context_mlp(combined)  # (B, D)
 
         # 2. Patchify
         x = self.patch_embed(x)  # (B, N_total, D)
-        x = x + c_emb
+        if self.cond_additive:
+            x = x + c_vec.unsqueeze(1)
 
         # 3. Transformer loop
         grid_t = T // self.patch_size[0]
@@ -502,9 +642,16 @@ class JiT3D_Modern(nn.Module):
             ctx_scale = torch.rand(B, device=x.device) * self.kv_ctx_noise
 
         for i, block in enumerate(self.blocks):
-            x = block(x, self.rope, grid_t, grid_h, grid_w, ctx_scale)
+            # c_vec is consumed only by blocks with an adaLN head (use_adaln);
+            # ignored otherwise (classic post-LN path, numerics unchanged).
+            x = block(x, self.rope, grid_t, grid_h, grid_w, ctx_scale, c_vec)
 
         x = self.norm_final(x)
+        if self.adaLN_final is not None:
+            # Final-layer modulation (shift, scale), zero-init -> identity at
+            # resume; both decoder heads see the modulated tokens.
+            shift_f, scale_f = self.adaLN_final(c_vec).unsqueeze(1).unbind(dim=2)
+            x = x * (1.0 + scale_f) + shift_f
         if self.dual_head:
             sat_out = self.final_layer_sat(x, T, H, W)
             # Detach the trunk output for the metar head so the metar loss
@@ -571,4 +718,25 @@ if __name__ == "__main__":
     with torch.no_grad():
         out_eval = model(x, t)
     print(f"[eval]  Output shape: {out_eval.shape}")
+
+    # --- adaLN conditioning: resume no-op equivalence (fine-tune recipe) ---
+    model_adaln = JiT3D_Modern(
+        img_size=(T, H, W),
+        patch_size=(1, 8, 8),
+        embed_dim=768,
+        depth=12,
+        num_heads=12,
+        n_context_frames=T_ctx,
+        use_adaln=True,        # per-block shift/scale/gate modulation
+        cond_additive=True,    # keep legacy additive c_emb (fine-tune recipe)
+        adaln_gate_init=1.0,   # identity at init -> exact resume no-op
+    ).to(device)
+    n_adaln_params = sum(p.numel() for p in model_adaln.parameters())
+    print(f"adaLN overhead: +{n_adaln_params - total_params:,} params")
+    model_adaln.load_state_dict(model.state_dict(), strict=False)  # trunk copy
+    model_adaln.eval()
+    with torch.no_grad():
+        out_adaln = model_adaln(x, t)
+    diff = (out_adaln - out_eval).abs().max().item()
+    print(f"[adaln] resume no-op max|diff| vs base = {diff:.3e} (expect 0)")
     print("Done.")
