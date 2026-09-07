@@ -20,6 +20,13 @@ small spatiotemporal recurrent decoder that:
     additive bias on the hidden state at every frame, giving the head a
     time-of-day / latitude signal to drive the diurnal curve even when the
     raw-METAR context is all zeros at non-station pixels.
+  - Injects a learned FRAME-INDEX embedding (nn.Embedding(num_frames,
+    hidden_dim)) as an additive hidden-state bias, giving the head an explicit
+    "which frame of the batch am I" identity. Without it the forecast frames
+    are structurally near-interchangeable to the recurrence (they share the
+    same diffusion t and the same global scalar bias, and the GRU state resets
+    to zero every AR batch), which surfaces as a forecast-horizon-periodic
+    (e.g. 3-frame) repeating pattern in autoregressive rollouts.
 
 The module exposes an optional ``init_states`` input and returns the final
 ``states`` so callers can carry the hidden state across autoregressive batches
@@ -104,6 +111,12 @@ class ConvGRUHead(nn.Module):
             larger kernels propagate stations further per step).
         num_layers: stacked ConvGRU layers (1 is usually enough for a
             refinement head; 2 adds capacity at ~2x cost).
+        num_frames: length of the temporal axis the head unrolls over (e.g.
+            7 = 4 context + 3 forecast). When set, a learned frame-index
+            embedding of that many slots is injected as a per-frame hidden
+            bias (see module docstring). None/0 disables it. Frame indices
+            beyond the trained horizon are clamped to the last embedding so
+            longer rollouts degrade gracefully instead of crashing.
     """
 
     def __init__(
@@ -116,6 +129,7 @@ class ConvGRUHead(nn.Module):
         scalar_dim: int = 6,
         kernel_size: int = 3,
         num_layers: int = 1,
+        num_frames: int | None = None,
     ):
         super().__init__()
         self.patch_size = patch_size
@@ -140,6 +154,19 @@ class ConvGRUHead(nn.Module):
             )
         else:
             self.scalar_mlp = None
+
+        # Learned frame-index embedding: one vector per position in the
+        # temporal window, injected as an additive hidden-state bias. Init at
+        # the trunk's trunc_normal(0.02) scale (NOT nn.Embedding's default
+        # N(0,1), which would swamp the resumed head at fine-tune start); a
+        # std of 0.02 keeps the change a near-no-op when migrating a
+        # pretrained checkpoint with strict=False.
+        self.num_frames = num_frames or 0
+        if self.num_frames > 0:
+            self.frame_emb = nn.Embedding(self.num_frames, hidden_dim)
+            nn.init.trunc_normal_(self.frame_emb.weight, std=0.02)
+        else:
+            self.frame_emb = None
 
         # Per-frame input channels: trunk estimate (+ raw METAR if present).
         in_dim = kpi_out_channels + self.kpi_in_channels
@@ -189,16 +216,36 @@ class ConvGRUHead(nn.Module):
         B, C_out, T_, H_, W_ = trunk_kpi.shape
 
         # 2. Per-frame input: trunk estimate (+ raw METAR channels)
-        if raw_kpi is not None and self.kpi_in_channels > 0:
-            # raw_kpi is (B, C_in, T, H, W) at full res; concat along channels.
-            inp = torch.cat([trunk_kpi, raw_kpi], dim=1)
+        if self.kpi_in_channels > 0:
+            if raw_kpi is not None:
+                # raw_kpi is (B, C_in, T, H, W) at full res; concat along channels.
+                inp = torch.cat([trunk_kpi, raw_kpi], dim=1)
+            else:
+                # raw_kpi=None is a documented input ("refine the trunk
+                # estimate alone"): keep the cells' expected channel layout
+                # with all-zero raw channels instead of crashing.
+                zeros = trunk_kpi.new_zeros(B, self.kpi_in_channels, T_, H_, W_)
+                inp = torch.cat([trunk_kpi, zeros], dim=1)
         else:
             inp = trunk_kpi
 
-        # 3. Scalar bias (B, hidden_dim) -> broadcast spatially when applied
-        s_emb = None
+        # 3. Per-frame conditioning biases, both applied additively on the
+        #    hidden state (broadcast over H, W):
+        #    a) scalar context: (B, scalar_dim) global per-sample context;
+        #    b) learned frame-index embedding (see module docstring): an
+        #       explicit per-frame identity so forecast frames stop being
+        #       structurally interchangeable (fixes the horizon-periodic
+        #       repeating pattern in AR rollouts). Indices beyond the trained
+        #       horizon clamp to the last embedding (graceful longer rollouts).
+        s_emb = None  # (B, hidden_dim)
         if self.scalar_mlp is not None and scalar is not None:
             s_emb = self.scalar_mlp(scalar)  # (B, hidden_dim)
+        f_emb = None  # (T_, hidden_dim)
+        if self.frame_emb is not None:
+            idx = torch.arange(T_, device=trunk_kpi.device).clamp(
+                max=self.num_frames - 1
+            )
+            f_emb = self.frame_emb(idx)  # (T_, hidden_dim)
 
         # 4. Init hidden states (zero if not provided)
         device = trunk_kpi.device
@@ -215,13 +262,19 @@ class ConvGRUHead(nn.Module):
         outs = []
         for t in range(T_):
             x = inp[:, :, t]  # (B, Cin, H, W)
+            # per-frame hidden bias: scalar context + frame-index identity.
+            # Computed once per frame, applied fresh at every layer so the
+            # recurrence is continuously conditioned on position-in-batch
+            # and time-of-day.
+            bias = None
+            if s_emb is not None:
+                bias = s_emb
+            if f_emb is not None:
+                bias = f_emb[t] if bias is None else bias + f_emb[t]
             for i, cell in enumerate(self.cells):
                 h = states[i]
-                # inject scalar as an additive bias on the hidden state for
-                # this frame (broadcast over H, W). Applied fresh every frame
-                # so the recurrence is continuously conditioned on time-of-day.
-                if s_emb is not None:
-                    h = h + s_emb.view(B, self.hidden_dim, 1, 1)
+                if bias is not None:
+                    h = h + bias.view(B, self.hidden_dim, 1, 1)
                 h = cell(x, h)
                 states[i] = h
                 x = h  # feed hidden to the next layer
@@ -244,6 +297,7 @@ if __name__ == "__main__":
     head = ConvGRUHead(
         patch_size, C_out, C_in, embed_dim,
         hidden_dim=32, scalar_dim=6, kernel_size=3, num_layers=1,
+        num_frames=T,
     )
     out, states = head(trunk_tokens, T, H, W, raw_kpi=raw_kpi, scalar=scalar)
     print("kpi_out:", out.shape)  # (2, 7, 7, 128, 128)

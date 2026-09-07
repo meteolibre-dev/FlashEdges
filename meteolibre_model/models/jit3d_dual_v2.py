@@ -91,17 +91,23 @@ if __name__ == "__main__":
         depth=4,
         num_heads=8,
         context_dim=128,
-        intermediate_dim=4,
     ).to(device)
 
     sat_input = torch.randn(B, 3, T, H, W).to(device)
     kpi_input = torch.randn(B, 4, T, H, W).to(device)
     context = torch.randn(B, 128).to(device)
 
+    # no metar_ref: kpi head refines the trunk estimate alone (zero raw ch)
     sat_out, kpi_out = model(sat_input, kpi_input, context)
     print(f"Sat output shape: {sat_out.shape}")
     print(f"KPI output shape: {kpi_out.shape}")
 
-    loss = sat_out.sum() + kpi_out.sum()
+    # metar_ref path used by the trainer / inference engine
+    sat_out2, kpi_out2 = model(
+        sat_input, kpi_input, context, metar_ref=kpi_input
+    )
+    print(f"KPI output shape (metar_ref): {kpi_out2.shape}")
+
+    loss = sat_out2.sum() + kpi_out2.sum()
     loss.backward()
     print("Backward pass successful.")

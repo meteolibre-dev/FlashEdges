@@ -372,6 +372,14 @@ class JiT3D_Modern(nn.Module):
                     scalar_dim=context_dim,
                     kernel_size=kpi_head_kernel,
                     num_layers=kpi_head_layers,
+                    # learned frame-index embedding over the full temporal
+                    # window (context + forecast, e.g. 7 = 4 + 3): gives the
+                    # ConvGRU an explicit per-frame identity so forecast
+                    # frames stop being structurally interchangeable (they
+                    # share one diffusion t and one global scalar), which
+                    # otherwise surfaces as a horizon-periodic (3-frame)
+                    # repeating pattern in AR rollouts.
+                    num_frames=img_size[0] // patch_size[0],
                 )
             else:
                 self.final_layer_kpi = FinalLayer(patch_size, kpi_out_channels, embed_dim)
@@ -510,10 +518,12 @@ class JiT3D_Modern(nn.Module):
                 # T with the raw METAR (metar_ref) + the scalar context (t) as
                 # inputs. The scalar carries the sun position / lat / diffusion
                 # timestep; raw METAR provides the sparse station anchors that
-                # the conv gates propagate spatially. Returns the refined KPI
-                # forecast and the final hidden states (the latter can be
-                # carried across AR batches / denoising steps -- not yet wired
-                # in the inference engine).
+                # the conv gates propagate spatially. The head additionally
+                # biases its hidden state with a learned frame-index embedding
+                # (see ConvGRUHead.frame_emb). Returns the refined KPI forecast
+                # and the final hidden states (the latter can be carried
+                # across AR batches / denoising steps -- not yet wired in the
+                # inference engine).
                 kpi_out, _ = self.kpi_head(
                     kpi_in, T, H, W, raw_kpi=metar_ref, scalar=t,
                 )
