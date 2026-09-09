@@ -642,7 +642,8 @@ class FlashEdgesInferenceEngine:
                 and elevation, or v1 [sat(5), metar(7)].
             forecast_steps: Total number of forecast frames to produce.
             nb_forecast: Frames generated per model call (autoregressive batch).
-            date: Datetime of the first context frame.
+            date: Datetime of the last context frame (H5 series_date /
+                frame_timestamps[-1]); forecast frames are +1h, +2h, ... after it.
             c_sat: Number of satellite channels. None (default) uses the
                 config's ``sat_in_channels`` (5 for v1 GMGSI + elevation,
                 6 for v2 GMGSI + radar + elevation).
@@ -725,8 +726,16 @@ class FlashEdgesInferenceEngine:
             this_nb = min(nb_forecast, remaining)
 
             if date:
-                # Each forecast frame is 1 hour after the last context frame
-                prediction_date = date + timedelta(hours=current_step + 1)
+                # Sun-position features at the MIDDLE frame of this call's
+                # forecast window, matching training: the v2 dataset computes
+                # suncalc at the parquet row's reference date, which with
+                # T=7 / context_frames=4 is 2h AFTER the last context frame
+                # (targets at +1h/+2h/+3h -> features at +2h, the middle
+                # target). The old current_step + 1 put features at the FIRST
+                # target frame -- a 1h skew vs training (~15 deg azimuth /
+                # few deg altitude of conditioning OOD).
+                mid_offset = current_step + 1 + (this_nb - 1) / 2.0
+                prediction_date = date + timedelta(hours=mid_offset)
             else:
                 prediction_date = datetime.utcnow()
 
