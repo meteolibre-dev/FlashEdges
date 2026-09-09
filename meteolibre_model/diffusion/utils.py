@@ -101,5 +101,5 @@ METAR_LOSS_WEIGHT = torch.tensor(
 # with scripts/compute_loss_weights.py over the v2 dataset (which needs a
 # 6-channel-aware update) before trusting the intra-branch balance.
 SAT_LOSS_WEIGHT_V2 = torch.tensor(
-    [0.9208, 1.1572, 0.9409, 0.9811, 0.1, 0.5], dtype=torch.float32
+    [0.9208, 1.1572, 0.9409, 0.9811, 0.05, 0.5], dtype=torch.float32
 )
