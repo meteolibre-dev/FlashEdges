@@ -61,7 +61,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-forecasts}"
 # config, not a CLI switch, so the inference parametrization always matches the
 # checkpoint's training parametrization.
 #   v1/v2: residual: true  | v3/v4: residual: false
-CONFIG_NAME="${CONFIG_NAME:-model_v4_global_satellite_metar}"
+CONFIG_NAME="${CONFIG_NAME:-model_v7_global_satellite_metar}"
 
 mkdir -p "$OUTPUT_DIR"
 

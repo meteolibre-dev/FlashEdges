@@ -199,7 +199,7 @@ model_v7_global_satellite_metar:
   parametrization: "standard"
   interpolation: "linear"
   batch_size: 64
-  learning_rate: 0.00001
+  learning_rate: 0.000001
   num_epochs: 500
   seed: 42
   sigma_noise_input: 10.0
