@@ -63,6 +63,14 @@ OUTPUT_DIR="${OUTPUT_DIR:-forecasts}"
 #   v1/v2: residual: true  | v3/v4: residual: false
 CONFIG_NAME="${CONFIG_NAME:-model_v7_global_satellite_metar}"
 
+# Latitude crop of the forecast product: GMGSI (geostationary composite)
+# has no data poleward of ~72.8 deg — the model got zero training signal
+# there, so the polar-cap forecast is hallucinated (METAR branch) or blank
+# (sat branch, previously written as literal 0 K). 73 keeps the full GMGSI
+# data band and writes NaN outside it (grid/transform unchanged).
+#   Override:  MAX_ABS_LAT=-1 sbatch ...   (legacy full-globe output)
+MAX_ABS_LAT="${MAX_ABS_LAT:-73}"
+
 mkdir -p "$OUTPUT_DIR"
 
 # ===== Run ==================================================================
@@ -97,6 +105,7 @@ for h5_file in $H5_PATTERN; do
         --batch_size "$BATCH_SIZE" \
         --context_frames 4 \
         --interpolation linear \
+        --max_abs_lat "$MAX_ABS_LAT" \
         --config_name "${CONFIG_NAME}"
 
     rc=$?

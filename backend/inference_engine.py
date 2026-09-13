@@ -255,6 +255,7 @@ class FlashEdgesInferenceEngine:
         inference_seed: Optional[int] = None,
         mask_all_metar: bool = False,
         metar_keep_ratio: float = 0.0,
+        max_abs_lat: Optional[float] = None,
         radar_cov_path: Optional[str] = None,
         device: Optional[str] = None,
     ):
@@ -305,6 +306,21 @@ class FlashEdgesInferenceEngine:
                 the same positions across all METAR channels & forecast frames
                 (station-like dots, not per-channel noise). Ignored when
                 mask_all_metar=True.
+            max_abs_lat: Crop the forecast product to |lat| <= this value
+                (degrees). The GMGSI geostationary composite has NO data
+                poleward of ~72.8 deg (source grid stops at +/-72.7), so the
+                model received zero context AND zero training signal there:
+                polar-cap patches are OOD and their output -- especially the
+                dense METAR branch, which is not masked by the sat nodata
+                convention -- is unconstrained hallucination. When set:
+                  * patches whose 128-px span lies ENTIRELY outside the band
+                    are not run at all (OOD inputs, wasted compute),
+                  * output pixels outside the band are written as NaN (both
+                    branches) instead of hallucinated values / literal 0.
+                The output GeoTIFF keeps the full 1800x3600 grid & transform
+                (poles simply become nodata), so downstream consumers are
+                unaffected. None or a value >= 90 disables (legacy full-globe
+                behavior). 73.0 is the natural setting (GMGSI data band).
             radar_cov_path: Path to the packed radar coverage NPZ
                 (``data_info/radar_cov_test.npz``). Only used when the config's
                 satellite branch carries the radar channel (6ch, configs
@@ -330,6 +346,11 @@ class FlashEdgesInferenceEngine:
             raise ValueError(
                 f"metar_keep_ratio must be in [0, 1], got {self.metar_keep_ratio}"
             )
+        # Latitude crop of the forecast product (see __init__ docstring).
+        # None / >= 90 disables (full-globe legacy behavior).
+        self.max_abs_lat = (
+            None if max_abs_lat is None or max_abs_lat >= 90.0 else float(max_abs_lat)
+        )
         if self.sampler == "sde" and self.interpolation != "linear":
             logger.warning(
                 "SDE sampler is only implemented for interpolation='linear' "
@@ -622,6 +643,49 @@ class FlashEdgesInferenceEngine:
 
         return list(set(coords1 + coords2 + extra_top + extra_left + extra_bottom + extra_right))
 
+    def _crop_band_rows(self, H_big: int, geo_transform) -> Optional[Tuple[int, int]]:
+        """Row-index band ``[row_lo, row_hi]`` (inclusive) kept by max_abs_lat.
+
+        Row ``r`` covers center latitude ``geo_transform[4] * (r + 0.5) +
+        geo_transform[5]``; rows whose center lies outside
+        ``+/- max_abs_lat`` are dropped. Returns None when the crop is
+        disabled (max_abs_lat None / >= 90) or the band is empty.
+        """
+        if self.max_abs_lat is None or self.max_abs_lat >= 90.0:
+            return None
+        res_y, lat_max = geo_transform[4], geo_transform[5]
+        row_lo = int(math.ceil((self.max_abs_lat - lat_max) / res_y - 0.5))
+        row_hi = int(math.floor((-self.max_abs_lat - lat_max) / res_y - 0.5))
+        row_lo = max(row_lo, 0)
+        row_hi = min(row_hi, H_big - 1)
+        if row_hi < row_lo:
+            return None
+        return row_lo, row_hi
+
+    @staticmethod
+    def _filter_patches_to_band(
+        patch_coords: List[Tuple[int, int]],
+        band_rows: Optional[Tuple[int, int]],
+        patch_size: int,
+    ) -> List[Tuple[int, int]]:
+        """Keep patches whose spatial span INTERSECTS the kept row band.
+
+        Patches fully inside the dropped polar region are OOD for the model
+        (their entire context is no-data zeros) and only contribute
+        hallucinated velocity there; dropping them skips both the compute and
+        the garbage. Patches that merely OVERLAP the band edge are kept: the
+        Gaussian-weighted blending needs them to predict the top/bottom rows
+        of the kept band.
+        """
+        if band_rows is None:
+            return patch_coords
+        row_lo, row_hi = band_rows
+        return [
+            (x, y)
+            for (x, y) in patch_coords
+            if y <= row_hi and (y + patch_size - 1) >= row_lo
+        ]
+
     @torch.no_grad()
     def tiled_inference(
         self,
@@ -717,6 +781,29 @@ class FlashEdgesInferenceEngine:
         # EPSG:4326, transform = [0.1, 0, -180, 0, -0.1, 90]
         # No CRS conversion needed.
         geo_transform = [0.1, 0.0, -180.0, 0.0, -0.1, 90.0]
+
+        # Optional latitude crop (see __init__ / max_abs_lat): GMGSI has no
+        # data beyond ~72.8 deg, so pure polar-cap patches are OOD. Skip them
+        # and NaN the output outside the band instead of writing
+        # hallucinations (dense METAR) / literal 0 K (sat).
+        band_rows = self._crop_band_rows(H_big, geo_transform)
+        outside_band = None
+        if band_rows is not None:
+            row_lo, row_hi = band_rows
+            n_patches_before = len(patch_coords)
+            patch_coords = self._filter_patches_to_band(
+                patch_coords, band_rows, self.patch_size
+            )
+            outside_band = torch.ones(H_big, dtype=torch.bool, device=self.device)
+            outside_band[row_lo : row_hi + 1] = False
+            lat_top = geo_transform[4] * (row_lo + 0.5) + geo_transform[5]
+            lat_bot = geo_transform[4] * (row_hi + 0.5) + geo_transform[5]
+            logger.info(
+                f"max_abs_lat={self.max_abs_lat:g}: output band rows "
+                f"[{row_lo},{row_hi}] (lat {lat_bot:.2f}..{lat_top:.2f}); "
+                f"{len(patch_coords)}/{n_patches_before} patches kept "
+                f"(polar-cap patches skipped); rows outside band -> NaN"
+            )
 
         current_context = initial_context
 
@@ -955,10 +1042,15 @@ class FlashEdgesInferenceEngine:
             # the v2 layout also radar pixels outside the coverage union:
             # missing radar is a no-data pixel exactly like off-disk GMGSI).
             # The written radar forecast band is additionally masked to NaN
-            # outside coverage in _save_timestep_files.
+            # outside coverage in _save_timestep_files. Written as NaN (the
+            # declared nodata value) -- the previous literal 0 rendered as
+            # 0 Kelvin on LWIR colormaps and as an extreme value, not as
+            # "no data".
             if sat_nodata_mask is not None:
                 nodata_last = sat_nodata_mask[:, :, -1:, :, :].expand_as(sat_denorm)
-                sat_denorm = torch.where(nodata_last, torch.zeros_like(sat_denorm), sat_denorm)
+                sat_denorm = torch.where(
+                    nodata_last, torch.full_like(sat_denorm, float("nan")), sat_denorm
+                )
 
             # Per-channel physical clamp on the precipitation band (p01m, in
             # dBZ). The shared normalized clamp [CLIP_MIN, METAR_CLIP_MAX] is
@@ -971,6 +1063,21 @@ class FlashEdgesInferenceEngine:
             if P01M_IDX < metar_denorm.shape[1]:
                 metar_denorm[:, P01M_IDX] = metar_denorm[:, P01M_IDX].clamp(
                     P01M_DBZ_MIN, P01M_DBZ_MAX
+                )
+
+            # Latitude crop: rows outside the kept band are never predicted
+            # by a kept patch (fully-cap patches were skipped, so their x_t
+            # there is untouched prior noise). Write NaN -- the declared
+            # nodata -- on BOTH branches instead of hallucinated values: the
+            # METAR branch has no sat-nodata convention and would otherwise
+            # write dense unconstrained output over the polar caps.
+            if outside_band is not None:
+                ob = outside_band.view(1, 1, 1, H_big, W_big)
+                sat_denorm = torch.where(
+                    ob, torch.full_like(sat_denorm, float("nan")), sat_denorm
+                )
+                metar_denorm = torch.where(
+                    ob, torch.full_like(metar_denorm, float("nan")), metar_denorm
                 )
 
             yield sat_denorm.cpu(), metar_denorm.cpu()
@@ -999,6 +1106,17 @@ class FlashEdgesInferenceEngine:
                 nodata_fb = sat_nodata_mask[:, :, -1:, :, :].expand_as(sat_fb)
                 sat_fb = torch.where(nodata_fb, torch.zeros_like(sat_fb), sat_fb)
 
+            # Latitude crop, feedback side: rows outside the kept band are
+            # never updated by a kept patch -- their x_t is untouched prior
+            # noise. Zero them in the context so the AR rollout never feeds
+            # that noise back. Essential when max_abs_lat is set INSIDE the
+            # GMGSI coverage edge (e.g. 60): there the nodata mask does NOT
+            # cover the dropped rows (real data exists) and the noise would
+            # leak into the next step's context as extreme values.
+            if outside_band is not None:
+                ob_fb = outside_band.view(1, 1, 1, H_big, W_big)
+                sat_fb = torch.where(ob_fb, torch.zeros_like(sat_fb), sat_fb)
+
             metar_pred = x_t[:, c_sat:].clamp(CLIP_MIN, METAR_CLIP_MAX)
             if metar_station_mask is not None:
                 keep_mask = metar_station_mask
@@ -1022,6 +1140,12 @@ class FlashEdgesInferenceEngine:
                     keep_mask.expand_as(metar_pred),
                     metar_pred,
                     torch.zeros_like(metar_pred),
+                )
+            if outside_band is not None:
+                # Same crop guard as sat_fb above: no station exists in the
+                # dropped rows we care about, but be strict anyway.
+                metar_pred = torch.where(
+                    ob_fb, torch.zeros_like(metar_pred), metar_pred
                 )
             x_t_for_ctx = torch.cat([sat_fb, metar_pred], dim=1)
 

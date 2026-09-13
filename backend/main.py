@@ -209,6 +209,7 @@ def run_local(args):
         inference_seed=args.inference_seed,
         mask_all_metar=args.mask_all_metar,
         metar_keep_ratio=args.metar_keep_ratio,
+        max_abs_lat=(None if args.max_abs_lat is None or args.max_abs_lat < 0 else args.max_abs_lat),
         radar_cov_path=args.radar_cov_path,
         device=args.device,
     )
@@ -292,6 +293,18 @@ def main():
         help="Path to the packed radar coverage NPZ (default: auto-resolve "
              "data_info/radar_cov_test.npz from the CWD or repo root). Only "
              "used with the v2 6-channel configs.",
+    )
+    parser.add_argument(
+        "--max_abs_lat", type=float, default=73.0,
+        help="Crop the forecast product to |lat| <= this value. GMGSI "
+             "(geostationary composite) has no data poleward of ~72.8 deg "
+             "and the model got zero training signal there, so the polar-cap "
+             "forecast is unconstrained hallucination (dense METAR) or blank "
+             "zeros (sat, previously written as literal 0 K). Patches fully "
+             "outside the band are skipped and all output pixels outside the "
+             "band are written as NaN (the declared nodata). The GeoTIFF "
+             "keeps the full 1800x3600 grid & transform. Default 73 (the "
+             "GMGSI data band); -1 disables (legacy full-globe output).",
     )
     parser.add_argument("--device", type=str, default=None,
                         help="cuda or cpu (auto-detected if not specified).")
