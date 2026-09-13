@@ -210,6 +210,11 @@ def run_local(args):
         mask_all_metar=args.mask_all_metar,
         metar_keep_ratio=args.metar_keep_ratio,
         max_abs_lat=(None if args.max_abs_lat is None or args.max_abs_lat < 0 else args.max_abs_lat),
+        debug_dir=args.debug_dir,
+        debug_save_steps=(
+            [int(s.strip()) for s in args.debug_save_steps.split(",") if s.strip()]
+            if args.debug_save_steps else None
+        ),
         radar_cov_path=args.radar_cov_path,
         device=args.device,
     )
@@ -305,6 +310,19 @@ def main():
              "band are written as NaN (the declared nodata). The GeoTIFF "
              "keeps the full 1800x3600 grid & transform. Default 73 (the "
              "GMGSI data band); -1 disables (legacy full-globe output).",
+    )
+    parser.add_argument(
+        "--debug_dir", type=str, default=None,
+        help="Directory to save per-step debug .pt tensors (init noise, "
+             "intermediate endpoint predictions x_pred, final integrated "
+             "state). Files are float16 on CPU (~500 MB each). None disables.",
+    )
+    parser.add_argument(
+        "--debug_save_steps", type=str, default=None,
+        help="Comma-separated denoising step indices to save the full-domain "
+             "endpoint prediction x_pred (e.g. '0,15,31'). The initial noise "
+             "and final integrated state are always saved when --debug_dir is "
+             "set. None disables intermediate saves.",
     )
     parser.add_argument("--device", type=str, default=None,
                         help="cuda or cpu (auto-detected if not specified).")

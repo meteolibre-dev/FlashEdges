@@ -256,6 +256,8 @@ class FlashEdgesInferenceEngine:
         mask_all_metar: bool = False,
         metar_keep_ratio: float = 0.0,
         max_abs_lat: Optional[float] = None,
+        debug_dir: Optional[str] = None,
+        debug_save_steps: Optional[List[int]] = None,
         radar_cov_path: Optional[str] = None,
         device: Optional[str] = None,
     ):
@@ -321,6 +323,19 @@ class FlashEdgesInferenceEngine:
                 (poles simply become nodata), so downstream consumers are
                 unaffected. None or a value >= 90 disables (legacy full-globe
                 behavior). 73.0 is the natural setting (GMGSI data band).
+            debug_dir: If set, per-step debug tensors are written here as
+                ``.pt`` files (float16 on CPU). See ``debug_save_steps``.
+                Typical size per file: ~500 MB (13 channels x 3 frames x
+                1800 x 3600). A debug run with the default 3 saved steps + init
+                + final ≈ 2.5 GB per AR batch.
+            debug_save_steps: List of 0-indexed denoising step indices at which
+                to save the full-domain endpoint prediction ``x_pred``
+                (the model's clean-image estimate, computed as
+                ``x_t - velocity * t`` before the Euler/SDE update). The initial
+                noise (step -1) and the final integrated state are always saved
+                when ``debug_dir`` is set. Example: ``[0, 15, 31]`` for a
+                32-step schedule saves the very start, midpoint, and end.
+                None disables intermediate saves (only init+final).
             radar_cov_path: Path to the packed radar coverage NPZ
                 (``data_info/radar_cov_test.npz``). Only used when the config's
                 satellite branch carries the radar channel (6ch, configs
@@ -351,6 +366,9 @@ class FlashEdgesInferenceEngine:
         self.max_abs_lat = (
             None if max_abs_lat is None or max_abs_lat >= 90.0 else float(max_abs_lat)
         )
+        self.debug_dir = debug_dir
+        self.debug_save_steps = set(debug_save_steps) if debug_save_steps else set()
+
         if self.sampler == "sde" and self.interpolation != "linear":
             logger.warning(
                 "SDE sampler is only implemented for interpolation='linear' "
@@ -840,6 +858,14 @@ class FlashEdgesInferenceEngine:
                 generator=noise_generator,
             )
 
+            # DEBUG: initial noise / prior state before denoising
+            if self.debug_dir:
+                os.makedirs(self.debug_dir, exist_ok=True)
+                torch.save(
+                    x_t.half().cpu(),
+                    os.path.join(self.debug_dir, f"debug_ar{current_step:02d}_init.pt"),
+                )
+
             for i in tqdm(range(self.denoising_steps), desc="Denoising"):
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -969,6 +995,19 @@ class FlashEdgesInferenceEngine:
                 weights_sum[weights_sum == 0] = 1.0
                 aggregated_velocity.div_(weights_sum)
                 averaged_velocity = aggregated_velocity.float()
+
+                # DEBUG: full-domain endpoint prediction before drift / SDE.
+                # x_pred = x_t - velocity * t  (the model's clean-image estimate).
+                if self.debug_dir and i in self.debug_save_steps:
+                    x_pred_full = x_t - averaged_velocity * t_val
+                    torch.save(
+                        x_pred_full.half().cpu(),
+                        os.path.join(
+                            self.debug_dir,
+                            f"debug_ar{current_step:02d}_step{i:03d}_t{t_val:.4f}.pt",
+                        ),
+                    )
+
                 del aggregated_velocity, weights_sum
 
                 # SDE only applies to interpolation="linear" (constructor
@@ -1013,6 +1052,14 @@ class FlashEdgesInferenceEngine:
                 x_t = torch.nan_to_num(x_t, nan=0.0, posinf=8.0, neginf=-7.0)
                 x_t.clamp_(-7, 8)
                 del averaged_velocity
+
+            # DEBUG: final integrated state after the denoising loop, before
+            # residual reconstruction / denormalization / clamping / NaN-masking.
+            if self.debug_dir:
+                torch.save(
+                    x_t.half().cpu(),
+                    os.path.join(self.debug_dir, f"debug_ar{current_step:02d}_final.pt"),
+                )
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
