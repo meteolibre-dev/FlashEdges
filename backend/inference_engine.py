@@ -1072,7 +1072,8 @@ class FlashEdgesInferenceEngine:
             # METAR branch has no sat-nodata convention and would otherwise
             # write dense unconstrained output over the polar caps.
             if outside_band is not None:
-                ob = outside_band.view(1, 1, 1, H_big, W_big)
+                # (1,1,1,H,1): per-ROW mask broadcast across channels/frames/width
+                ob = outside_band.view(1, 1, 1, H_big, 1)
                 sat_denorm = torch.where(
                     ob, torch.full_like(sat_denorm, float("nan")), sat_denorm
                 )
@@ -1114,7 +1115,8 @@ class FlashEdgesInferenceEngine:
             # cover the dropped rows (real data exists) and the noise would
             # leak into the next step's context as extreme values.
             if outside_band is not None:
-                ob_fb = outside_band.view(1, 1, 1, H_big, W_big)
+                # (1,1,1,H,1): per-ROW mask broadcast (same shape fix as ob)
+                ob_fb = outside_band.view(1, 1, 1, H_big, 1)
                 sat_fb = torch.where(ob_fb, torch.zeros_like(sat_fb), sat_fb)
 
             metar_pred = x_t[:, c_sat:].clamp(CLIP_MIN, METAR_CLIP_MAX)
