@@ -360,7 +360,7 @@ def main():
     parser.add_argument(
         "--metar_drop_frac",
         type=float,
-        default=0.05,
+        default=0.2,
         help="Fraction of valid-station METAR pixels hidden in the context.",
     )
     parser.add_argument("--temporal_weight_scale", type=float, default=None)
