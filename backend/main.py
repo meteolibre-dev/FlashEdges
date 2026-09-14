@@ -210,6 +210,13 @@ def run_local(args):
         mask_all_metar=args.mask_all_metar,
         metar_keep_ratio=args.metar_keep_ratio,
         max_abs_lat=(None if args.max_abs_lat is None or args.max_abs_lat < 0 else args.max_abs_lat),
+        debug_dir=args.debug_dir,
+        debug_save_steps=(
+            [int(s.strip()) for s in args.debug_save_steps.split(",") if s.strip()]
+            if args.debug_save_steps else None
+        ),
+        force_nodata_xpred=args.force_nodata_xpred,
+        force_metar_xpred=args.force_metar_xpred,
         radar_cov_path=args.radar_cov_path,
         device=args.device,
     )
@@ -305,6 +312,43 @@ def main():
              "band are written as NaN (the declared nodata). The GeoTIFF "
              "keeps the full 1800x3600 grid & transform. Default 73 (the "
              "GMGSI data band); -1 disables (legacy full-globe output).",
+    )
+    parser.add_argument(
+        "--debug_dir", type=str, default=None,
+        help="Directory to save per-step debug .pt tensors (init noise, "
+             "intermediate endpoint predictions x_pred, final integrated "
+             "state). Files are float16 on CPU (~500 MB each). None disables.",
+    )
+    parser.add_argument(
+        "--debug_save_steps", type=str, default=None,
+        help="Comma-separated denoising step indices to save the full-domain "
+             "endpoint prediction x_pred (e.g. '0,15,31'). The initial noise "
+             "and final integrated state are always saved when --debug_dir is "
+             "set. None disables intermediate saves.",
+    )
+    parser.add_argument(
+        "--force_nodata_xpred", action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Force x_pred = 0 at sat no-data pixels (GMGSI off-disk / radar "
+             "outside coverage / elevation nodata) so the denoising "
+             "trajectory stays on the training manifold (t*noise -> 0) "
+             "instead of drifting toward hallucinated content near the "
+             "polar data edge. Applied at every step; the sat product at "
+             "no-data pixels is NaN-masked at write time. Use "
+             "--no-force_nodata_xpred for A/B ablation of the fix.",
+    )
+    parser.add_argument(
+        "--force_metar_xpred", action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Hybrid METAR forcing: zero x_pred at non-station pixels during "
+             "denoising steps 0..N-2 (keeps x_t on the t*noise training "
+             "marginal; the shared trunk attends over sat+metar tokens, so "
+             "off-manifold METAR x_t contaminates the sat branch like the "
+             "polar wedge did), then RELEASE at the last step (t=dt) so the "
+             "final Euler update lands x_t exactly on the dense unforced "
+             "x_pred -- the written METAR product keeps the dense spatial-"
+             "fill forecast from one clean forward pass. Use "
+             "--no-force_metar_xpred for A/B ablation.",
     )
     parser.add_argument("--device", type=str, default=None,
                         help="cuda or cpu (auto-detected if not specified).")
