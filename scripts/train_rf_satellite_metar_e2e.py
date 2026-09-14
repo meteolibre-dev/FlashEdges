@@ -353,8 +353,8 @@ def main():
     parser.add_argument("--hf_dataset_repo", type=str, default="meteolibre-dev/global_sat_metar")
     parser.add_argument("--data_dir", type=str, default=None)
     parser.add_argument("--prefetch_rows", type=int, default=8)
-    parser.add_argument("--shuffle_buffer", type=int, default=200)
-    parser.add_argument("--num_workers", type=int, default=10)
+    parser.add_argument("--shuffle_buffer", type=int, default=100)
+    parser.add_argument("--num_workers", type=int, default=5)
     parser.add_argument("--cache_size", type=int, default=2)
     parser.add_argument("--steps_per_epoch", type=int, default=4000)
     parser.add_argument(
