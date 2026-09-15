@@ -30,6 +30,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY meteolibre_model/ ./meteolibre_model/
 RUN pip install --no-cache-dir -e .
 
+# Static data files (radar coverage mask required at inference time).
+COPY data_info/ ./data_info/
+
 # Copy the rest of the backend application.
 COPY backend/ ./backend/
 
